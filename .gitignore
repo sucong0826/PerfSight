@@ -1,0 +1,14 @@
+node_modules/
+target/
+**/target/
+**/node_modules/
+dist/
+build/
+*.db
+*.db-journal
+*.db-wal
+.DS_Store
+.vscode/
+.idea/
+*.log
+src-tauri/gen/
