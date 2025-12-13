@@ -56,7 +56,15 @@ export const ReportDetail: React.FC = () => {
             const pid = parseInt(pidStr);
             foundPids.add(pid);
             point[`cpu_${pid}`] = metric.cpu_usage;
+            if (metric.cpu_os_usage != null)
+              point[`cpuos_${pid}`] = metric.cpu_os_usage;
+            if (metric.cpu_chrome_usage != null)
+              point[`cpuch_${pid}`] = metric.cpu_chrome_usage;
             point[`rss_${pid}`] = metric.memory_rss;
+            if (metric.memory_footprint != null)
+              point[`foot_${pid}`] = metric.memory_footprint;
+            if (metric.memory_private != null)
+              point[`pmem_${pid}`] = metric.memory_private;
             if (metric.js_heap_size) point[`heap_${pid}`] = metric.js_heap_size;
             if (metric.gpu_usage) point[`gpu_${pid}`] = metric.gpu_usage;
         });
@@ -122,86 +130,125 @@ export const ReportDetail: React.FC = () => {
 
   return (
     <div className="p-8 h-screen flex flex-col bg-slate-950 text-slate-200 overflow-hidden">
-        <div className="flex items-center justify-between mb-6 shrink-0">
-            <div className="flex items-center gap-4">
-                <Link to="/reports" className="p-2 hover:bg-slate-900 rounded-lg text-slate-400"><ArrowLeft className="w-5 h-5"/></Link>
-                <h1 className="text-xl font-bold">{report.title}</h1>
-            </div>
-            <button 
-                onClick={handleExport}
-                className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg font-medium transition-colors"
-            >
-                <Download className="w-4 h-4" /> Export PDF
-            </button>
+      <div className="flex items-center justify-between mb-6 shrink-0">
+        <div className="flex items-center gap-4">
+          <Link
+            to="/reports"
+            className="p-2 hover:bg-slate-900 rounded-lg text-slate-400"
+          >
+            <ArrowLeft className="w-5 h-5" />
+          </Link>
+          <h1 className="text-xl font-bold">{report.title}</h1>
         </div>
-        
-        <div id="report-content" className="flex-1 overflow-y-auto p-4"> // Added ID and padding for capture
-            {report.analysis && (
-            <div className="mb-6 grid grid-cols-1 lg:grid-cols-4 gap-4">
-                {/* Score Card */}
-                <div className="bg-slate-900 border border-slate-800 p-5 rounded-xl flex flex-col items-center justify-center relative overflow-hidden">
-                    <div className="text-sm text-slate-500 uppercase font-bold mb-2">Performance Score</div>
-                    <div className={`text-5xl font-bold ${getScoreColor(report.analysis.score)}`}>{report.analysis.score}</div>
-                    <div className="absolute top-0 right-0 p-2 opacity-10">
-                         {report.analysis.score >= 80 ? <CheckCircle className="w-24 h-24" /> : <AlertTriangle className="w-24 h-24" />}
-                    </div>
-                </div>
+        <button
+          onClick={handleExport}
+          className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg font-medium transition-colors"
+        >
+          <Download className="w-4 h-4" /> Export PDF
+        </button>
+      </div>
 
-                {/* Stats */}
-                <div className="lg:col-span-2 bg-slate-900 border border-slate-800 p-5 rounded-xl grid grid-cols-2 gap-4">
-                     <div>
-                        <div className="text-xs text-slate-500 mb-1">Avg CPU</div>
-                        <div className="text-xl font-medium">{report.analysis.summary.avg_cpu.toFixed(1)}%</div>
-                     </div>
-                     <div>
-                        <div className="text-xs text-slate-500 mb-1">Max CPU</div>
-                        <div className="text-xl font-medium">{report.analysis.summary.max_cpu.toFixed(1)}%</div>
-                     </div>
-                     <div>
-                        <div className="text-xs text-slate-500 mb-1">Avg Memory</div>
-                        <div className="text-xl font-medium">{report.analysis.summary.avg_mem_mb.toFixed(0)} MB</div>
-                     </div>
-                     <div>
-                        <div className="text-xs text-slate-500 mb-1">Mem Growth</div>
-                        <div className={`text-xl font-medium flex items-center gap-2 ${report.analysis.summary.mem_growth_rate > 0.1 ? 'text-rose-400' : 'text-slate-200'}`}>
-                            {report.analysis.summary.mem_growth_rate.toFixed(2)} MB/s
-                            {report.analysis.summary.mem_growth_rate > 0.1 && <TrendingUp className="w-4 h-4" />}
-                        </div>
-                     </div>
-                </div>
-
-                {/* Insights */}
-                <div className="bg-slate-900 border border-slate-800 p-5 rounded-xl overflow-y-auto max-h-[160px] custom-scrollbar">
-                    <div className="text-sm text-slate-500 uppercase font-bold mb-3">Insights</div>
-                    {report.analysis.insights.length === 0 ? (
-                        <div className="text-sm text-slate-500 italic">No issues detected. Good job!</div>
-                    ) : (
-                        <ul className="space-y-2">
-                            {report.analysis.insights.map((insight, i) => (
-                                <li key={i} className="text-sm text-rose-300 flex gap-2 items-start">
-                                    <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-                                    <span>{insight}</span>
-                                </li>
-                            ))}
-                        </ul>
-                    )}
-                </div>
+      <div id="report-content" className="flex-1 overflow-y-auto p-4">
+        {/* Added ID and padding for capture */}
+        {report.analysis && (
+          <div className="mb-6 grid grid-cols-1 lg:grid-cols-4 gap-4">
+            {/* Score Card */}
+            <div className="bg-slate-900 border border-slate-800 p-5 rounded-xl flex flex-col items-center justify-center relative overflow-hidden">
+              <div className="text-sm text-slate-500 uppercase font-bold mb-2">
+                Performance Score
+              </div>
+              <div
+                className={`text-5xl font-bold ${getScoreColor(
+                  report.analysis.score
+                )}`}
+              >
+                {report.analysis.score}
+              </div>
+              <div className="absolute top-0 right-0 p-2 opacity-10">
+                {report.analysis.score >= 80 ? (
+                  <CheckCircle className="w-24 h-24" />
+                ) : (
+                  <AlertTriangle className="w-24 h-24" />
+                )}
+              </div>
             </div>
-            )}
 
-            <PerformanceCharts 
-                data={chartData} 
-                selectedProcesses={processes} 
-                hiddenPids={hiddenPids} 
-                onToggleVisibility={(pid) => {
-                    const next = new Set(hiddenPids);
-                    if (next.has(pid)) next.delete(pid);
-                    else next.add(pid);
-                    setHiddenPids(next);
-                }}
-                mode={detectedMode}
-            />
-        </div>
+            {/* Stats */}
+            <div className="lg:col-span-2 bg-slate-900 border border-slate-800 p-5 rounded-xl grid grid-cols-2 gap-4">
+              <div>
+                <div className="text-xs text-slate-500 mb-1">Avg CPU</div>
+                <div className="text-xl font-medium">
+                  {report.analysis.summary.avg_cpu.toFixed(1)}%
+                </div>
+              </div>
+              <div>
+                <div className="text-xs text-slate-500 mb-1">Max CPU</div>
+                <div className="text-xl font-medium">
+                  {report.analysis.summary.max_cpu.toFixed(1)}%
+                </div>
+              </div>
+              <div>
+                <div className="text-xs text-slate-500 mb-1">Avg Memory</div>
+                <div className="text-xl font-medium">
+                  {report.analysis.summary.avg_mem_mb.toFixed(0)} MB
+                </div>
+              </div>
+              <div>
+                <div className="text-xs text-slate-500 mb-1">Mem Growth</div>
+                <div
+                  className={`text-xl font-medium flex items-center gap-2 ${
+                    report.analysis.summary.mem_growth_rate > 0.1
+                      ? "text-rose-400"
+                      : "text-slate-200"
+                  }`}
+                >
+                  {report.analysis.summary.mem_growth_rate.toFixed(2)} MB/s
+                  {report.analysis.summary.mem_growth_rate > 0.1 && (
+                    <TrendingUp className="w-4 h-4" />
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Insights */}
+            <div className="bg-slate-900 border border-slate-800 p-5 rounded-xl overflow-y-auto max-h-[160px] custom-scrollbar">
+              <div className="text-sm text-slate-500 uppercase font-bold mb-3">
+                Insights
+              </div>
+              {report.analysis.insights.length === 0 ? (
+                <div className="text-sm text-slate-500 italic">
+                  No issues detected. Good job!
+                </div>
+              ) : (
+                <ul className="space-y-2">
+                  {report.analysis.insights.map((insight, i) => (
+                    <li
+                      key={i}
+                      className="text-sm text-rose-300 flex gap-2 items-start"
+                    >
+                      <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                      <span>{insight}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        )}
+        <PerformanceCharts
+          data={chartData}
+          selectedProcesses={processes}
+          hiddenPids={hiddenPids}
+          onToggleVisibility={(pid) => {
+            const next = new Set(hiddenPids);
+            if (next.has(pid)) next.delete(pid);
+            else next.add(pid);
+            setHiddenPids(next);
+          }}
+          mode={detectedMode}
+          metricStandard={detectedMode === "browser" ? "chrome" : "os"}
+        />
+      </div>
     </div>
   );
 };

@@ -5,6 +5,19 @@ use url::Url;
 use std::net::TcpStream;
 use std::time::Duration;
 
+#[derive(Debug, Deserialize)]
+struct CdpVersionInfo {
+    #[serde(rename = "webSocketDebuggerUrl")]
+    pub ws_url: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BrowserProcessInfo {
+    pub cpu_time: f64,
+    pub private_mem_bytes: Option<u64>,
+    pub proc_type: String,
+}
+
 #[derive(Debug, Deserialize, Clone, Serialize)]
 pub struct CdpTarget {
     pub id: String,
@@ -38,6 +51,107 @@ impl CdpClient {
         Ok(targets)
     }
 
+    fn get_browser_ws_url() -> Result<String, String> {
+        let url = "http://localhost:9222/json/version";
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .map_err(|e| e.to_string())?;
+
+        let resp = client.get(url).send().map_err(|e| e.to_string())?;
+        let version: CdpVersionInfo = resp.json().map_err(|e| e.to_string())?;
+        version
+            .ws_url
+            .ok_or_else(|| "Missing webSocketDebuggerUrl in /json/version".to_string())
+    }
+
+    /// Fetch browser-level process info (same source Chrome Task Manager uses internally).
+    /// Returns a map keyed by OS process id.
+    pub fn get_browser_process_info() -> Result<std::collections::HashMap<u32, BrowserProcessInfo>, String> {
+        let ws_url = Self::get_browser_ws_url()?;
+        let (mut socket, _) = Self::connect_ws(&ws_url).ok_or_else(|| "Failed to connect to browser websocket".to_string())?;
+
+        let _ = socket.send(Message::Text(
+            json!({ "id": 101, "method": "SystemInfo.getProcessInfo" }).to_string().into(),
+        ));
+
+        for _ in 0..10 {
+            if let Ok(Message::Text(text)) = socket.read() {
+                let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+                if v["id"] == 101 {
+                    let mut out = std::collections::HashMap::new();
+                    if let Some(infos) = v["result"]["processInfo"].as_array() {
+                        for info in infos {
+                            let id = info["id"].as_u64().unwrap_or(0) as u32;
+                            if id == 0 {
+                                continue;
+                            }
+                            let cpu_time = info["cpuTime"].as_f64().unwrap_or(0.0);
+                            let proc_type_raw = info["type"].as_str().unwrap_or("other").to_string();
+                            let proc_type_norm = proc_type_raw.to_lowercase();
+                            let proc_type = match proc_type_norm.as_str() {
+                                "gpu" => "GPU".to_string(),
+                                "renderer" => "Renderer".to_string(),
+                                "browser" => "Browser".to_string(),
+                                "utility" => "Utility".to_string(),
+                                _ => {
+                                    // Some builds return fully-qualified service names like
+                                    // "network.mojom.NetworkService" / "storage.mojom.StorageService".
+                                    if proc_type_norm.contains("network") || proc_type_norm.contains("storage") || proc_type_norm.contains("service") {
+                                        "Utility".to_string()
+                                    } else {
+                                        "Other".to_string()
+                                    }
+                                }
+                            };
+
+                            // CDP commonly reports privateMemorySize in KB; treat as KiB and convert to bytes.
+                            let private_mem_bytes = info
+                                .get("privateMemorySize")
+                                .and_then(|m| m.as_u64())
+                                .map(|kb| kb.saturating_mul(1024));
+
+                            out.insert(
+                                id,
+                                BrowserProcessInfo {
+                                    cpu_time,
+                                    private_mem_bytes,
+                                    proc_type,
+                                },
+                            );
+                        }
+                    }
+                    return Ok(out);
+                }
+            }
+        }
+
+        Err("Timed out waiting for SystemInfo.getProcessInfo response".to_string())
+    }
+
+    /// Debug helper: return the raw `result.processInfo` array from CDP `SystemInfo.getProcessInfo`.
+    /// This is useful to align fields/units with Chrome Task Manager across platforms/versions.
+    pub fn get_browser_process_info_raw() -> Result<serde_json::Value, String> {
+        let ws_url = Self::get_browser_ws_url()?;
+        let (mut socket, _) = Self::connect_ws(&ws_url)
+            .ok_or_else(|| "Failed to connect to browser websocket".to_string())?;
+
+        let _ = socket.send(Message::Text(
+            json!({ "id": 201, "method": "SystemInfo.getProcessInfo" }).to_string().into(),
+        ));
+
+        for _ in 0..10 {
+            if let Ok(Message::Text(text)) = socket.read() {
+                let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+                if v["id"] == 201 {
+                    return Ok(v["result"]["processInfo"].clone());
+                }
+            }
+        }
+
+        Err("Timed out waiting for SystemInfo.getProcessInfo response".to_string())
+    }
+
     // Helper to connect with timeout
     fn connect_ws(ws_url: &str) -> Option<(tungstenite::WebSocket<TcpStream>, tungstenite::handshake::client::Response)> {
         let url_obj = Url::parse(ws_url).ok()?;
@@ -55,55 +169,59 @@ impl CdpClient {
     pub fn get_pid(ws_url: &str) -> Option<u32> {
         let (mut socket, _) = Self::connect_ws(ws_url)?;
 
-        // Try SystemInfo.getProcessInfo (Browser level) - might fail on Page target
-        // Try Page.getProcessId (Page level) - Experimental but common
-        // We try Page.getProcessId first as it's specific to the frame
-        
-        // 1. Page.enable
-        let _ = socket.send(Message::Text(json!({ "id": 10, "method": "Page.enable" }).to_string().into()));
-        let _ = socket.read(); // Consume
+        // Best-effort PID mapping for a Page target:
+        // 1) Prefer Page.getProcessId (returns the renderer OS processId for this page).
+        // 2) Fallback to SystemInfo.getProcessInfo and pick a renderer entry (imprecise).
 
-        // 2. Page.getProcessId
-        let _ = socket.send(Message::Text(json!({ "id": 11, "method": "SystemInfo.getProcessInfo" }).to_string().into()));
-        // Note: SystemInfo.getProcessInfo on a Page target usually returns the process info FOR THAT RENDERER in the 'processInfo' array? 
-        // Actually, let's try a better one: "Page.getResourceTree" -> frame.processId?
-        
-        // Let's stick to the most reliable: SystemInfo.getProcessInfo usually returns ALL processes.
-        // But for a specific Tab, we want ITS pid.
-        
-        // Let's try the undocumented "Page.getProcessId" if available, or assume SystemInfo returns single entry?
-        // Actually, in `explore_cdp.py`, we saw SystemInfo.getProcessInfo returns an array.
-        
-        // CHANGE STRATEGY:
-        // We use `Runtime.evaluate` to get `pid`? No, JS can't access PID.
-        
-        // Back to `SystemInfo.getProcessInfo`. If we call it on a Page Target, does it return only relevant processes?
-        // Let's try reading it.
-        
+        // 1. Page.enable
+        let _ = socket.send(Message::Text(
+            json!({ "id": 10, "method": "Page.enable" }).to_string().into(),
+        ));
+        let _ = socket.read(); // consume any ack/event
+
+        // 2. Page.getProcessId (preferred)
+        let _ = socket.send(Message::Text(
+            json!({ "id": 11, "method": "Page.getProcessId" }).to_string().into(),
+        ));
+
         for _ in 0..5 {
             if let Ok(Message::Text(text)) = socket.read() {
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
                     if v["id"] == 11 {
-                        // Check result.processInfo
-                        if let Some(infos) = v["result"]["processInfo"].as_array() {
-                            // If there's only one renderer in the list, that's it.
-                            // If multiple, we are lost without matching.
-                            // But usually, connecting to a Page and asking SystemInfo might filter it?
-                            // Let's just take the first 'renderer' type we see? No, dangerous.
-                            
-                            // Let's try searching for a matching ID? No common ID.
-                            
-                            for info in infos {
-                                if info["type"].as_str() == Some("renderer") {
-                                    return info["id"].as_u64().map(|id| id as u32);
-                                }
-                            }
+                        if let Some(pid) = v["result"]["processId"].as_u64() {
+                            return Some(pid as u32);
                         }
+                        break; // got response but no pid, fallback below
                     }
                 }
             }
         }
-        
+
+        // 3. Fallback: SystemInfo.getProcessInfo (imprecise on a Page target)
+        let _ = socket.send(Message::Text(
+            json!({ "id": 12, "method": "SystemInfo.getProcessInfo" }).to_string().into(),
+        ));
+
+        for _ in 0..8 {
+            if let Ok(Message::Text(text)) = socket.read() {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                    if v["id"] == 12 {
+                        if let Some(infos) = v["result"]["processInfo"].as_array() {
+                            for info in infos {
+                                let t = info["type"].as_str().unwrap_or("").to_lowercase();
+                                if t == "renderer" {
+                                    if let Some(id) = info["id"].as_u64() {
+                                        return Some(id as u32);
+                                    }
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
         None
     }
 

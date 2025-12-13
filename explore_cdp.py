@@ -48,8 +48,28 @@ def explore():
                 ws.send(json.dumps({"id": 2, "method": "SystemInfo.getProcessInfo"}))
                 res = json.loads(ws.recv())
                 if 'result' in res and 'processInfo' in res['result']:
-                    print("First Process Entry:", res['result']['processInfo'][0])
-                    # We expect: { 'id': 1234, 'type': 'renderer', 'cpuTime': ... }
+                    infos = res['result']['processInfo']
+                    print(f"Total processInfo entries: {len(infos)}")
+
+                    # Print the first entry (raw)
+                    print("\nFirst processInfo entry (raw):")
+                    print(json.dumps(infos[0], indent=2, ensure_ascii=False))
+
+                    # Print any GPU entries (raw)
+                    gpu_infos = [p for p in infos if p.get("type") == "gpu"]
+                    print(f"\nGPU entries: {len(gpu_infos)}")
+                    for i, p in enumerate(gpu_infos[:5]):
+                        print(f"\nGPU[{i}] (raw):")
+                        print(json.dumps(p, indent=2, ensure_ascii=False))
+
+                    # Print a compact table for quick scanning
+                    print("\n--- Compact list (id, type, cpuTime, privateMemorySize?) ---")
+                    for p in infos[:50]:
+                        pid = p.get("id")
+                        ptype = p.get("type")
+                        cpu_time = p.get("cpuTime")
+                        pmem = p.get("privateMemorySize")
+                        print(f"id={pid} type={ptype} cpuTime={cpu_time} privateMemorySize={pmem}")
 
                 ws.close()
         except Exception as e:

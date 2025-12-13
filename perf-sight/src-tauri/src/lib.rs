@@ -40,7 +40,8 @@ pub fn run() {
             commands::start_collection,
             commands::stop_collection,
             commands::get_reports,
-            commands::get_report_detail
+            commands::get_report_detail,
+            commands::debug_get_cdp_process_info
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

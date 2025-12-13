@@ -20,10 +20,22 @@ pub struct ProcessInfo {
 pub struct MetricPoint {
     pub timestamp: DateTime<Utc>,
     pub pid: u32,
+    /// Selected/primary CPU% (kept for backward compatibility with older UI).
+    /// - system mode: OS CPU%
+    /// - browser mode: Chrome Task Manager-aligned CPU% when available, else OS CPU%
     pub cpu_usage: f32,
+    /// OS-level CPU% for this PID (sysinfo).
+    pub cpu_os_usage: f32,
+    /// Chrome Task Manager-aligned CPU% derived from CDP cpuTime deltas (when available).
+    pub cpu_chrome_usage: Option<f32>,
     pub memory_rss: u64,
+    /// OS task-manager style memory footprint (macOS: phys_footprint), when available.
+    pub memory_footprint: Option<u64>,
     pub gpu_usage: Option<f32>, 
     pub js_heap_size: Option<u64>, // Browser Metric
+    // Browser Task Manager-aligned metric (when available via CDP SystemInfo.getProcessInfo)
+    // Typically reported as "Memory footprint" / private memory.
+    pub memory_private: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]

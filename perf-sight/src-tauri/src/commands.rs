@@ -4,12 +4,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::thread::{self, JoinHandle};
 use crate::models::{CollectionConfig, ProcessInfo, BatchMetric};
-use crate::collector::{create_collector};
+use crate::collector::create_collector;
 use chrono::Utc;
 use std::collections::HashMap;
 use crate::database::Database;
 use crate::database::{ReportSummary, ReportDetail};
 use std::panic;
+use crate::collector::cdp::CdpClient;
+use serde_json::Value;
 
 pub struct CollectionState {
     pub handle: Arc<Mutex<Option<JoinHandle<()>>>>,
@@ -49,7 +51,7 @@ pub async fn get_process_list(args: Option<ProcessListArgs>) -> Result<Vec<Proce
     let mode = args.map(|a| a.mode).unwrap_or("system".to_string());
 
     let res = tokio::task::spawn_blocking(move || {
-        let mut collector = create_collector();
+        let mut collector = create_collector(&mode);
         collector.scan_processes(&mode)
     }).await.map_err(|e| e.to_string())?;
     
@@ -78,7 +80,7 @@ pub async fn start_collection(
     let is_running_clone = state.is_running.clone();
     let pids = config.target_pids;
     let interval = config.interval_ms;
-    let _mode = config.mode.clone(); 
+    let mode = config.mode.clone();
 
     let buffer_clone = state.buffer.clone();
 
@@ -86,7 +88,7 @@ pub async fn start_collection(
     let task = thread::spawn(move || {
         let is_running_loop = is_running_clone.clone();
         let result = panic::catch_unwind(panic::AssertUnwindSafe(move || {
-            let mut collector = create_collector();
+            let mut collector = create_collector(&mode);
             println!("Collector created. Loop starting...");
 
             while *safe_lock(&is_running_loop) {
@@ -198,4 +200,12 @@ pub fn get_reports(db: State<'_, Database>) -> Result<Vec<ReportSummary>, String
 #[tauri::command]
 pub fn get_report_detail(db: State<'_, Database>, id: i64) -> Result<ReportDetail, String> {
     db.get_report_detail(id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn debug_get_cdp_process_info() -> Result<Value, String> {
+    let res = tokio::task::spawn_blocking(move || CdpClient::get_browser_process_info_raw())
+        .await
+        .map_err(|e| e.to_string())??;
+    Ok(res)
 }

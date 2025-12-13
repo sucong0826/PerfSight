@@ -36,7 +36,13 @@ pub fn analyze(metrics: &[BatchMetric]) -> AnalysisReport {
         let mut total_mem = 0.0;
         for m in batch.metrics.values() {
             total_cpu += m.cpu_usage;
-            total_mem += m.memory_rss as f64;
+            // Prefer Task-Manager aligned memory when available to avoid RSS double-counting
+            // across multi-process apps (especially Chromium).
+            let mem_bytes = m
+                .memory_private
+                .or(m.memory_footprint)
+                .unwrap_or(m.memory_rss);
+            total_mem += mem_bytes as f64;
         }
         cpu_points.push(total_cpu);
         mem_points.push(total_mem / 1024.0 / 1024.0); // MB

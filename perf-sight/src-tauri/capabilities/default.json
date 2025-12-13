@@ -1,0 +1,11 @@
+{
+  "identifier": "default",
+  "description": "Default capability for the main window/webview. Allows receiving metric batches from the backend via Tauri events.",
+  "windows": ["*"],
+  "permissions": [
+    "core:default",
+    "core:event:default"
+  ]
+}
+
+
