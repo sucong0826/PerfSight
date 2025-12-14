@@ -83,3 +83,13 @@ jobs:
           releaseDraft: true
           prerelease: false
 
+      - name: Zip Chrome Extension (Windows)
+        if: matrix.platform == 'windows-latest'
+        run: Compress-Archive -Path perf-sight-extension -DestinationPath perf-sight-extension.zip
+
+      - name: Upload Extension to Release
+        if: matrix.platform == 'windows-latest'
+        uses: softprops/action-gh-release@v2
+        with:
+           files: perf-sight-extension.zip
+
