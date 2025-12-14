@@ -4,6 +4,7 @@ pub mod collector;
 pub mod commands;
 pub mod database;
 pub mod analysis;
+pub mod ws_server;
 
 use commands::CollectionState;
 use database::Database;
@@ -33,6 +34,9 @@ pub fn run() {
             app.manage(db);
             app.manage(CollectionState::new());
             
+            // Start WebSocket Server for Chrome Extension
+            ws_server::start_server(app.handle().clone());
+            
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -40,8 +44,7 @@ pub fn run() {
             commands::start_collection,
             commands::stop_collection,
             commands::get_reports,
-            commands::get_report_detail,
-            commands::debug_get_cdp_process_info
+            commands::get_report_detail
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

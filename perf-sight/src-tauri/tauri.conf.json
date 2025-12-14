@@ -25,6 +25,9 @@
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns"
+    ],
+    "externalBin": [
+      "binaries/collector"
     ]
   },
   "version": "0.1.0",

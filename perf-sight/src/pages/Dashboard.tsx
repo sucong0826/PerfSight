@@ -35,7 +35,6 @@ export const Dashboard: React.FC = () => {
   const [isCollecting, setIsCollecting] = useState(false);
   const [chartData, setChartData] = useState<any[]>([]);
   const [filterText, setFilterText] = useState("");
-  const [cdpDebugJson, setCdpDebugJson] = useState<string>("");
   const [isMocking, setIsMocking] = useState(false);
 
   const maxDataPoints = 3600;
@@ -43,6 +42,9 @@ export const Dashboard: React.FC = () => {
   const unlistenRef = useRef<null | (() => void)>(null);
 
   useEffect(() => {
+    // Enable live preview: Listen to metrics immediately
+    ensureMetricListener();
+
     loadProcesses();
     if (!isCollecting) {
       setSelectedPids(new Set());
@@ -116,10 +118,7 @@ export const Dashboard: React.FC = () => {
     if (selectedPids.size === 0) return;
     try {
       const pids = Array.from(selectedPids);
-      // Make sure event listener is active BEFORE starting collection.
-      // If listener setup fails, don't silently fall back to mock; that creates confusing mismatches
-      // between live UI and saved reports.
-      await ensureMetricListener();
+      // Listener is already active via useEffect for live preview
 
       await invoke("start_collection", {
         config: { target_pids: pids, interval_ms: 1000, mode: mode },
@@ -255,29 +254,6 @@ export const Dashboard: React.FC = () => {
           )}
         </div>
         <div className="flex items-center gap-3">
-          {mode === "browser" && (
-            <button
-              className="px-3 py-1.5 rounded-lg text-sm font-medium bg-slate-800 text-slate-300 border border-slate-700 hover:bg-slate-700 transition-colors"
-              onClick={async () => {
-                try {
-                  const res = await invoke("debug_get_cdp_process_info");
-                  const text = JSON.stringify(res, null, 2);
-                  setCdpDebugJson(text);
-                  console.log("CDP SystemInfo.getProcessInfo:", res);
-                  try {
-                    await navigator.clipboard.writeText(text);
-                  } catch {
-                    // clipboard may be denied; ignore
-                  }
-                } catch (e) {
-                  console.error(e);
-                  setCdpDebugJson(String(e));
-                }
-              }}
-            >
-              Dump CDP processInfo
-            </button>
-          )}
           <div
             className={`px-3 py-1 rounded-full text-sm font-medium ${
               isCollecting
@@ -315,24 +291,6 @@ export const Dashboard: React.FC = () => {
           />
         </div>
         <div className="lg:col-span-3 h-full overflow-y-auto">
-          {mode === "browser" && cdpDebugJson && (
-            <div className="mb-6 bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-xl">
-              <div className="flex items-center justify-between mb-3">
-                <div className="text-sm font-semibold text-slate-300">
-                  CDP `SystemInfo.getProcessInfo` (raw)
-                </div>
-                <button
-                  className="text-xs px-2 py-1 rounded bg-slate-800 border border-slate-700 text-slate-300 hover:bg-slate-700"
-                  onClick={() => setCdpDebugJson("")}
-                >
-                  Clear
-                </button>
-              </div>
-              <pre className="text-xs text-slate-200 whitespace-pre-wrap break-words max-h-[300px] overflow-auto bg-slate-950/50 border border-slate-800 rounded-lg p-3">
-                {cdpDebugJson}
-              </pre>
-            </div>
-          )}
           <PerformanceCharts
             data={chartData}
             selectedProcesses={selectedProcessList}

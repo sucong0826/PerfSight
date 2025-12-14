@@ -4,8 +4,16 @@
   "windows": ["*"],
   "permissions": [
     "core:default",
-    "core:event:default"
+    "core:event:default",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "name": "binaries/collector",
+          "sidecar": true,
+          "args": true
+        }
+      ]
+    }
   ]
 }
-
-

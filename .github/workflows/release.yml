@@ -33,6 +33,41 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install Python and Build Sidecar
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      
+      - name: Build Python Sidecar
+        shell: bash
+        run: |
+          pip install psutil pyinstaller
+          cd perf-sight/src-tauri/python
+          pyinstaller --onefile --name collector collector.py
+          
+          mkdir -p ../binaries
+          
+          # Determine target triple suffix
+          if [ "${{ matrix.platform }}" == "windows-latest" ]; then
+            SUFFIX="x86_64-pc-windows-msvc.exe"
+            SRC="dist/collector.exe"
+          elif [ "${{ matrix.platform }}" == "ubuntu-22.04" ]; then
+            SUFFIX="x86_64-unknown-linux-gnu"
+            SRC="dist/collector"
+          else
+            # macOS
+            ARCH=$(uname -m)
+            if [ "$ARCH" == "arm64" ]; then
+              SUFFIX="aarch64-apple-darwin"
+            else
+              SUFFIX="x86_64-apple-darwin"
+            fi
+            SRC="dist/collector"
+          fi
+          
+          echo "Moving sidecar to ../binaries/collector-$SUFFIX"
+          mv $SRC ../binaries/collector-$SUFFIX
+
       - name: Install frontend dependencies
         run: cd perf-sight && npm install
 

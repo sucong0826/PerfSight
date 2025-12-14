@@ -97,34 +97,65 @@ export const ReportDetail: React.FC = () => {
   };
 
   const handleExport = async () => {
+    console.log("Export started...");
     const element = document.getElementById('report-content');
-    if (!element || !report) return;
+    if (!element || !report) {
+        console.error("Element or report missing");
+        return;
+    }
     
     try {
+        console.log("Generating canvas...");
+        // Capture the full scrollable height
         const canvas = await html2canvas(element, {
             scale: 2, 
             backgroundColor: '#020617', // slate-950
             logging: false,
-            useCORS: true
+            useCORS: true,
+            height: element.scrollHeight,
+            windowHeight: element.scrollHeight,
+            onclone: (clonedDoc) => {
+                const clonedElement = clonedDoc.getElementById('report-content');
+                if (clonedElement) {
+                    clonedElement.style.overflow = 'visible';
+                    clonedElement.style.height = 'auto';
+                }
+            }
         });
         
+        console.log("Canvas generated. Creating PDF...");
         const imgData = canvas.toDataURL('image/png');
         const pdf = new jsPDF('p', 'mm', 'a4');
         const pdfWidth = pdf.internal.pageSize.getWidth();
+        const pdfHeight = pdf.internal.pageSize.getHeight();
         
         const imgProps = pdf.getImageProperties(imgData);
-        const pdfImgHeight = (imgProps.height * (pdfWidth - 20)) / imgProps.width;
+        const imgHeight = (imgProps.height * (pdfWidth - 20)) / imgProps.width;
         
-        // If height > page height, we might need multiple pages.
-        // For MVP, we just add the image. If it's too long, it might be cut off or scaled.
-        // Better: Split if needed, but 'PerformanceCharts' is hard to split.
-        // We'll stick to single page fitting or scrolling capture.
+        console.log(`Image height: ${imgHeight}mm, Page height: ${pdfHeight}mm`);
+
+        // Add image to PDF (Single page for now to ensure it works, scaling if needed?)
+        // Or simple multi-page
+        let heightLeft = imgHeight;
+        let position = 10;
+        const pageHeight = pdfHeight - 20;
+
+        pdf.addImage(imgData, 'PNG', 10, position, pdfWidth - 20, imgHeight);
+        heightLeft -= pageHeight;
+
+        while (heightLeft > 0) {
+            position -= pageHeight; 
+            pdf.addPage();
+            pdf.addImage(imgData, 'PNG', 10, position, pdfWidth - 20, imgHeight);
+            heightLeft -= pageHeight;
+        }
         
-        pdf.addImage(imgData, 'PNG', 10, 10, pdfWidth - 20, pdfImgHeight);
+        console.log("Saving PDF file...");
         pdf.save(`PerfSight_Report_${report.id}.pdf`);
+        console.log("Export complete.");
     } catch (err) {
         console.error("Export failed", err);
-        alert("Failed to export PDF");
+        alert(`Failed to export PDF: ${err}`);
     }
   };
 
