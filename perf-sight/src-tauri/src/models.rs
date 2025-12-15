@@ -59,5 +59,6 @@ pub struct CdpTarget {
     pub title: String,
     pub r#type: String, // "page", "iframe", "service_worker"
     pub url: String,
-    pub webSocketDebuggerUrl: Option<String>,
+    #[serde(rename = "webSocketDebuggerUrl")]
+    pub web_socket_debugger_url: Option<String>,
 }
