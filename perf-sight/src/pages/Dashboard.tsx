@@ -24,6 +24,27 @@ interface BatchMetric {
   metrics: { [pid: number]: MetricPoint };
 }
 
+interface TestContext {
+  scenario_name?: string | null;
+  build_id?: string | null;
+  tags?: string[] | null;
+  notes?: string | null;
+}
+
+const genBuildId = () => {
+  // Short, human-friendly id for reports (no PII).
+  try {
+    const bytes = new Uint8Array(6);
+    crypto.getRandomValues(bytes);
+    const hex = Array.from(bytes)
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+    return `bld_${hex}`;
+  } catch {
+    return `bld_${Math.random().toString(16).slice(2, 10)}`;
+  }
+};
+
 export const Dashboard: React.FC = () => {
   const [mode, setMode] = useState<"system" | "browser">("system");
   const [processes, setProcesses] = useState<ProcessInfo[]>([]);
@@ -36,23 +57,112 @@ export const Dashboard: React.FC = () => {
   const [chartData, setChartData] = useState<any[]>([]);
   const [filterText, setFilterText] = useState("");
   const [isMocking, setIsMocking] = useState(false);
+  const [scenarioName, setScenarioName] = useState("");
+  const [buildId, setBuildId] = useState("");
+  const [tagsText, setTagsText] = useState("");
+  const [notes, setNotes] = useState("");
+  const [durationMinutesText, setDurationMinutesText] = useState("");
+  const [durationHint, setDurationHint] = useState<string | null>(null);
 
   const maxDataPoints = 3600;
   const mockTimerRef = useRef<any>(null);
   const unlistenRef = useRef<null | (() => void)>(null);
+  const isRehydratingRef = useRef(false);
+  const autoStopTimeoutRef = useRef<any>(null);
+  const isCollectingRef = useRef(false);
+  const autoStopDeadlineMsRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    isCollectingRef.current = isCollecting;
+  }, [isCollecting]);
+
+  useEffect(() => {
+    // On mount (or when returning to this route), sync UI with backend collection state.
+    (async () => {
+      try {
+        isRehydratingRef.current = true;
+        await ensureMetricListener();
+        const status = (await invoke("get_collection_status")) as {
+          is_running: boolean;
+          target_pids: number[];
+          mode: "system" | "browser";
+          test_context?: TestContext | null;
+          started_at?: string | null;
+          stop_after_seconds?: number | null;
+        };
+
+        if (status?.is_running) {
+          setIsMocking(false);
+          setIsCollecting(true);
+          setSelectedPids(new Set(status.target_pids || []));
+          setHiddenPids(new Set());
+          setMode(status.mode || "system");
+          if (status.test_context) {
+            setScenarioName(status.test_context.scenario_name ?? "");
+            setBuildId(status.test_context.build_id ?? "");
+            setTagsText((status.test_context.tags ?? []).join(", "));
+            setNotes(status.test_context.notes ?? "");
+          }
+
+          // Rehydrate auto-stop timer if configured.
+          if (status.stop_after_seconds && status.started_at) {
+            const startedMs = Date.parse(status.started_at);
+            if (!Number.isNaN(startedMs)) {
+              const deadline = startedMs + status.stop_after_seconds * 1000;
+              autoStopDeadlineMsRef.current = deadline;
+              const remainingMs = deadline - Date.now();
+              setDurationMinutesText((status.stop_after_seconds / 60).toFixed(2).replace(/\.?0+$/, ""));
+              if (remainingMs <= 0) {
+                // Already overdue -> stop immediately.
+                try {
+                  await invoke("stop_collection");
+                  setIsCollecting(false);
+                  setDurationHint(null);
+                } catch (e) {
+                  console.warn("Auto-stop failed during rehydrate", e);
+                }
+              } else {
+                if (autoStopTimeoutRef.current) clearTimeout(autoStopTimeoutRef.current);
+                autoStopTimeoutRef.current = setTimeout(() => {
+                  if (!isCollectingRef.current) return;
+                  handleStop();
+                }, remainingMs);
+                setDurationHint(`Auto-stop in ~${Math.ceil(remainingMs / 1000)}s`);
+              }
+            }
+          } else {
+            autoStopDeadlineMsRef.current = null;
+            setDurationHint(null);
+          }
+        } else {
+          setIsCollecting(false);
+          autoStopDeadlineMsRef.current = null;
+          setDurationHint(null);
+        }
+      } catch (e) {
+        console.warn("Failed to rehydrate collection status", e);
+      } finally {
+        isRehydratingRef.current = false;
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     // Enable live preview: Listen to metrics immediately
     ensureMetricListener();
-
     loadProcesses();
-    if (!isCollecting) {
-      setSelectedPids(new Set());
-      setHiddenPids(new Set());
-    }
     // Default standard per mode: Browser API -> Chrome Task Manager, System API -> OS.
     setMetricStandard(mode === "browser" ? "chrome" : "os");
   }, [mode]);
+
+  useEffect(() => {
+    // Only clear selection when the user actually stops collection (not when rehydrating on route change).
+    if (!isCollecting && !isRehydratingRef.current) {
+      setSelectedPids(new Set());
+      setHiddenPids(new Set());
+    }
+  }, [isCollecting]);
 
   useEffect(() => {
     // Cleanup listener on unmount
@@ -120,12 +230,52 @@ export const Dashboard: React.FC = () => {
       const pids = Array.from(selectedPids);
       // Listener is already active via useEffect for live preview
 
+      const effectiveBuildId = buildId.trim() || genBuildId();
+      if (!buildId.trim()) setBuildId(effectiveBuildId);
+
+      const tags = tagsText
+        .split(",")
+        .map((t) => t.trim())
+        .filter(Boolean);
+      const testContext: TestContext = {
+        scenario_name: scenarioName.trim() || null,
+        build_id: effectiveBuildId,
+        tags: tags.length ? tags : null,
+        notes: notes.trim() || null,
+      };
+
+      // Optional duration (minutes) -> seconds.
+      const mins = parseFloat(durationMinutesText.trim());
+      const stopAfterSeconds =
+        Number.isFinite(mins) && mins > 0 ? Math.max(1, Math.round(mins * 60)) : null;
+
       await invoke("start_collection", {
-        config: { target_pids: pids, interval_ms: 1000, mode: mode },
+        config: {
+          target_pids: pids,
+          interval_ms: 1000,
+          mode: mode,
+          test_context: testContext,
+          stop_after_seconds: stopAfterSeconds,
+        },
       });
       setIsMocking(false);
       setIsCollecting(true);
       setChartData([]);
+
+      // Schedule auto-stop (frontend-driven), survives route changes via backend rehydration fields.
+      if (autoStopTimeoutRef.current) clearTimeout(autoStopTimeoutRef.current);
+      if (stopAfterSeconds) {
+        const deadline = Date.now() + stopAfterSeconds * 1000;
+        autoStopDeadlineMsRef.current = deadline;
+        setDurationHint(`Auto-stop in ~${stopAfterSeconds}s`);
+        autoStopTimeoutRef.current = setTimeout(() => {
+          if (!isCollectingRef.current) return;
+          handleStop();
+        }, stopAfterSeconds * 1000);
+      } else {
+        autoStopDeadlineMsRef.current = null;
+        setDurationHint(null);
+      }
     } catch (e: any) {
       console.error(e);
       // Only use mock data when starting the real collector fails.
@@ -141,6 +291,10 @@ export const Dashboard: React.FC = () => {
       setIsCollecting(false);
       setIsMocking(false);
       if (mockTimerRef.current) clearInterval(mockTimerRef.current);
+      if (autoStopTimeoutRef.current) clearTimeout(autoStopTimeoutRef.current);
+      autoStopTimeoutRef.current = null;
+      autoStopDeadlineMsRef.current = null;
+      setDurationHint(null);
     } catch (e) {
       console.error(e);
     }
@@ -164,7 +318,12 @@ export const Dashboard: React.FC = () => {
         if (metric.js_heap_size) point[`heap_${pidStr}`] = metric.js_heap_size;
         if (metric.gpu_usage) point[`gpu_${pidStr}`] = metric.gpu_usage;
       });
-      const newData = [...prev, point];
+      // Merge same-timestamp batches (can happen when backend receives per-PID websocket frames).
+      const last = prev.length ? prev[prev.length - 1] : null;
+      const newData =
+        last && last.timestamp === batch.timestamp
+          ? [...prev.slice(0, -1), { ...last, ...point }]
+          : [...prev, point];
       if (newData.length > maxDataPoints)
         return newData.slice(newData.length - maxDataPoints);
       return newData;
@@ -274,6 +433,14 @@ export const Dashboard: React.FC = () => {
             isCollecting={isCollecting}
             mode={mode as any}
             filterText={filterText}
+            durationMinutesText={durationMinutesText}
+            onDurationMinutesTextChange={(val) => {
+              setDurationMinutesText(val);
+              const mins = parseFloat(val.trim());
+              if (Number.isFinite(mins) && mins > 0) setDurationHint(`Will auto-stop after ~${Math.round(mins * 60)}s`);
+              else setDurationHint(null);
+            }}
+            durationHint={durationHint}
             onFilterChange={setFilterText}
             onToggleSelection={(pid) => {
               const next = new Set(selectedPids);
@@ -291,6 +458,54 @@ export const Dashboard: React.FC = () => {
           />
         </div>
         <div className="lg:col-span-3 h-full overflow-y-auto">
+          <div className="mb-4 bg-slate-900 border border-slate-800 rounded-xl p-4">
+            <div className="text-sm text-slate-500 uppercase font-bold mb-3">
+              Test Context (saved into report metadata)
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                <div className="text-xs text-slate-500 mb-1">Scenario Name</div>
+                <input
+                  value={scenarioName}
+                  onChange={(e) => setScenarioName(e.target.value)}
+                  disabled={isCollecting}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 disabled:opacity-60"
+                  placeholder="e.g. Login + Feed scroll"
+                />
+              </div>
+              <div>
+                <div className="text-xs text-slate-500 mb-1">Build ID</div>
+                <input
+                  value={buildId}
+                  onChange={(e) => setBuildId(e.target.value)}
+                  disabled={isCollecting}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 disabled:opacity-60"
+                  placeholder="e.g. commit SHA / CI build number"
+                />
+              </div>
+              <div className="md:col-span-2">
+                <div className="text-xs text-slate-500 mb-1">Tags (comma-separated)</div>
+                <input
+                  value={tagsText}
+                  onChange={(e) => setTagsText(e.target.value)}
+                  disabled={isCollecting}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 disabled:opacity-60"
+                  placeholder="e.g. smoke, perf, macos"
+                />
+              </div>
+              <div className="md:col-span-2">
+                <div className="text-xs text-slate-500 mb-1">Notes</div>
+                <textarea
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  disabled={isCollecting}
+                  rows={3}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 disabled:opacity-60"
+                  placeholder="Optional context for AI: feature flags, dataset size, etc."
+                />
+              </div>
+            </div>
+          </div>
           <PerformanceCharts
             data={chartData}
             selectedProcesses={selectedProcessList}

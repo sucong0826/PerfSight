@@ -7,11 +7,51 @@ use sysinfo::{Pid, System};
 use std::collections::HashMap;
 use std::time::Instant;
 
-#[cfg(target_os = "macos")]
-fn macos_phys_footprint_bytes(pid: u32) -> Option<u64> {
-    // Uses proc_pid_rusage(RUSAGE_INFO_V4) which includes ri_phys_footprint.
-    // This is the closest match to Chrome Task Manager "Memory footprint" on macOS.
+fn os_cpu_pct_for_task_manager(raw_sysinfo_cpu_pct: f32) -> f32 {
+    // sysinfo's Process::cpu_usage() can exceed 100% on multi-core machines.
     //
+    // For alignment:
+    // - Windows Task Manager usually shows 0-100% of total CPU capacity -> normalize by CPU count.
+    // - macOS Activity Monitor commonly shows per-core summed CPU% (can exceed 100%) -> do NOT normalize.
+    #[cfg(target_os = "windows")]
+    {
+        let cpu_count = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1) as f32;
+        return raw_sysinfo_cpu_pct / cpu_count;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        raw_sysinfo_cpu_pct
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_total_memory_bytes() -> Option<u64> {
+    // Prefer sysctl hw.memsize on macOS; it's stable and avoids relying on sysinfo refresh state.
+    use std::mem::size_of;
+    let mut memsize: u64 = 0;
+    let mut len = size_of::<u64>();
+    let name = b"hw.memsize\0";
+    let rc = unsafe {
+        libc::sysctlbyname(
+            name.as_ptr().cast(),
+            (&mut memsize as *mut u64).cast(),
+            (&mut len as *mut usize).cast(),
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc == 0 && memsize > 0 {
+        Some(memsize)
+    } else {
+        None
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_rusage_v4(pid: u32) -> Option<libc::rusage_info_v4> {
     // IMPORTANT: Don't define the struct manually. If the layout/size is wrong, the kernel
     // can write past the buffer and cause EXC_BAD_ACCESS/SIGSEGV later.
     use std::mem::MaybeUninit;
@@ -28,12 +68,43 @@ fn macos_phys_footprint_bytes(pid: u32) -> Option<u64> {
     let rc = unsafe { libc::proc_pid_rusage(pid as libc::c_int, RUSAGE_INFO_V4, &mut buf) };
 
     if rc == 0 {
-        let info = unsafe { info.assume_init() };
-        let footprint = info.ri_phys_footprint as u64;
-        if footprint > 0 { Some(footprint) } else { None }
+        Some(unsafe { info.assume_init() })
     } else {
         None
     }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_activity_monitor_memory_bytes(pid: u32) -> Option<u64> {
+    // Activity Monitor "Memory" is closest to the kernel's phys_footprint (rusage ri_phys_footprint).
+    // However, on some systems / processes we observed clearly invalid values (tens of GB).
+    // In those cases, fall back to ri_resident_size (still OS-backed and usually much closer than RSS).
+    let info = macos_rusage_v4(pid)?;
+    let phys = info.ri_phys_footprint as u64;
+    let resident = info.ri_resident_size as u64;
+
+    // Hard sanity guard: anything above 1 TB is not plausible for a single process footprint.
+    let one_tb: u64 = 1024_u64 * 1024 * 1024 * 1024;
+    let total_mem_bytes = macos_total_memory_bytes().unwrap_or(0);
+
+    let phys_plausible = phys > 0
+        && phys < one_tb
+        && (total_mem_bytes == 0 || phys <= total_mem_bytes.saturating_mul(2));
+
+    if phys_plausible {
+        return Some(phys);
+    }
+
+    // If phys_footprint looks wrong but resident is present, use resident as a safer fallback.
+    if resident > 0 && resident < one_tb {
+        eprintln!(
+            "WARN: using resident_size instead of phys_footprint for pid {} (phys={} bytes, resident={} bytes, system_total={} bytes)",
+            pid, phys, resident, total_mem_bytes
+        );
+        return Some(resident);
+    }
+
+    None
 }
 
 pub trait ResourceCollector {
@@ -153,8 +224,8 @@ impl ResourceCollector for GeneralCollector {
                     let mut cpu = 0.0;
                     if pid < 90000 {
                         if let Some(proc) = self.system.process(Pid::from(pid as usize)) {
-                            // sysinfo returns memory in KiB; frontend expects bytes.
-                            memory = proc.memory().saturating_mul(1024);
+                            // sysinfo (0.30+) returns memory in bytes.
+                            memory = proc.memory();
                             cpu = proc.cpu_usage();
                         }
                     }
@@ -203,9 +274,6 @@ impl ResourceCollector for GeneralCollector {
         
         // System Mode: Default sysinfo logic
         self.system.refresh_processes();
-        let cpu_count = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1) as f32;
         let mut results = Vec::new();
         
         for (pid, process) in self.system.processes() {
@@ -235,10 +303,9 @@ impl ResourceCollector for GeneralCollector {
                 results.push(ProcessInfo {
                     pid: pid.as_u32(),
                     name: name,
-                    // sysinfo returns memory in KiB; frontend expects bytes.
-                    memory_usage: process.memory().saturating_mul(1024),
-                    // Normalize to 0-100% of total CPU capacity to match common task managers.
-                    cpu_usage: process.cpu_usage() / cpu_count,
+                    // sysinfo returns memory in bytes.
+                    memory_usage: process.memory(),
+                    cpu_usage: os_cpu_pct_for_task_manager(process.cpu_usage()),
                     proc_type: p_type,
                     title: title,
                     url: url,
@@ -265,26 +332,44 @@ impl ResourceCollector for GeneralCollector {
         // 1. Get Sysinfo Metrics (if PID is likely real)
         // Virtual PIDs start at 90000
         if pid < 90000 {
-            let cpu_count = std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(1) as f32;
             let sys_pid = Pid::from(pid as usize);
             if let Some(process) = self.system.process(sys_pid) {
-                // sysinfo process cpu_usage() can exceed 100% on multi-core machines.
-                // Normalize to 0-100% of total CPU capacity for closer alignment with OS task managers.
-                point.cpu_os_usage = process.cpu_usage() / cpu_count;
+                point.cpu_os_usage = os_cpu_pct_for_task_manager(process.cpu_usage());
                 // Default primary CPU to OS unless overridden by Chrome-aligned value in browser mode.
                 point.cpu_usage = point.cpu_os_usage;
-                // sysinfo returns memory in KiB; frontend expects bytes.
-                point.memory_rss = process.memory().saturating_mul(1024);
+                // sysinfo returns memory in bytes, but we add a defensive macOS sanity normalization
+                // to avoid regressions if a platform/build reports KiB unexpectedly.
+                let rss_raw = process.memory();
+                #[cfg(target_os = "macos")]
+                {
+                    let total = macos_total_memory_bytes().unwrap_or(0);
+                    if total > 0 && rss_raw > total.saturating_mul(4) {
+                        let rss_kib_as_bytes = rss_raw / 1024;
+                        if rss_kib_as_bytes <= total.saturating_mul(4) {
+                            eprintln!(
+                                "WARN: sysinfo process.memory() looks like KiB; normalizing to bytes for pid {} (raw={}, normalized={})",
+                                pid, rss_raw, rss_kib_as_bytes
+                            );
+                            point.memory_rss = rss_kib_as_bytes;
+                        } else {
+                            point.memory_rss = rss_raw;
+                        }
+                    } else {
+                        point.memory_rss = rss_raw;
+                    }
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    point.memory_rss = rss_raw;
+                }
             }
         }
 
-        // OS Task Manager memory footprint (macOS)
-        #[cfg(target_os = "macos")]
-        if pid < 90000 {
-            point.memory_footprint = macos_phys_footprint_bytes(pid);
-        }
+        // macOS note:
+        // We intentionally do NOT emit Activity Monitor "footprint" as the default System API memory
+        // because it confuses users and doesn't match Activity Monitor's "Inspect Process -> Real Memory Size".
+        // For System API, we treat memory as RSS ("real memory") via sysinfo.
+        // We only use rusage-based footprint as a best-effort fallback for Chrome-aligned browser metrics.
 
         // 2. Get CDP Metrics (if session exists)
         if let Some(ws_url) = self.cdp_sessions.get(&pid) {
@@ -308,7 +393,7 @@ impl ResourceCollector for GeneralCollector {
             // than RSS or CDP privateMemorySize (which may be absent depending on Chrome build).
             #[cfg(target_os = "macos")]
             if point.memory_private.is_none() && pid < 90000 {
-                point.memory_private = macos_phys_footprint_bytes(pid);
+                point.memory_private = macos_activity_monitor_memory_bytes(pid);
             }
         }
 

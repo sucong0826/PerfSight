@@ -19,6 +19,7 @@ def get_cpu_count():
         return 1
 
 CPU_COUNT = get_cpu_count()
+IS_DARWIN = sys.platform == "darwin"
 
 def collect_metrics():
     """Main collection loop running in a separate thread."""
@@ -76,8 +77,15 @@ def collect_metrics():
                         delta_cpu = total_cpu_time - last_total
                         
                         if delta_time > 0 and delta_cpu >= 0:
-                            # Normalize by core count to match Task Manager
-                            cpu = (delta_cpu / delta_time) * 100 / CPU_COUNT
+                            # CPU% reporting differs by OS UI conventions:
+                            # - Windows Task Manager: typically normalized to total CPU capacity (0-100%)
+                            # - macOS Activity Monitor: typically sums per-core usage (can exceed 100%)
+                            #
+                            # So:
+                            # - On macOS, do NOT divide by CPU_COUNT (match Activity Monitor).
+                            # - On Windows/Linux, divide by CPU_COUNT (match Task Manager style).
+                            cpu_raw = (delta_cpu / delta_time) * 100
+                            cpu = cpu_raw if IS_DARWIN else (cpu_raw / CPU_COUNT)
                         else:
                             cpu = 0.0
                     else:

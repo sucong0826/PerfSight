@@ -70,6 +70,7 @@ impl CdpClient {
     pub fn get_browser_process_info() -> Result<std::collections::HashMap<u32, BrowserProcessInfo>, String> {
         let ws_url = Self::get_browser_ws_url()?;
         let (mut socket, _) = Self::connect_ws(&ws_url).ok_or_else(|| "Failed to connect to browser websocket".to_string())?;
+        let total_mem_bytes = sysinfo::System::new().total_memory().max(1);
 
         let _ = socket.send(Message::Text(
             json!({ "id": 101, "method": "SystemInfo.getProcessInfo" }).to_string().into(),
@@ -105,11 +106,23 @@ impl CdpClient {
                                 }
                             };
 
-                            // CDP commonly reports privateMemorySize in KB; treat as KiB and convert to bytes.
+                            // CDP docs say privateMemorySize is in KB, but some builds appear to return bytes.
+                            // Choose the interpretation that yields a plausible value relative to system RAM.
                             let private_mem_bytes = info
                                 .get("privateMemorySize")
                                 .and_then(|m| m.as_u64())
-                                .map(|kb| kb.saturating_mul(1024));
+                                .and_then(|raw| {
+                                    let as_kib_bytes = raw.saturating_mul(1024);
+                                    let as_bytes = raw;
+                                    let plaus_kib = as_kib_bytes <= total_mem_bytes.saturating_mul(4);
+                                    let plaus_bytes = as_bytes <= total_mem_bytes.saturating_mul(4);
+                                    match (plaus_kib, plaus_bytes) {
+                                        (true, false) => Some(as_kib_bytes),
+                                        (false, true) => Some(as_bytes),
+                                        (true, true) => Some(as_kib_bytes), // prefer spec unit
+                                        (false, false) => None,
+                                    }
+                                });
 
                             out.insert(
                                 id,

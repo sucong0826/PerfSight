@@ -4,6 +4,9 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "sidecar:ensure": "python3 src-tauri/python/build_sidecar.py",
+    "dev:tauri": "npm run sidecar:ensure && vite",
+    "build:tauri": "npm run sidecar:ensure && tsc && vite build",
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",

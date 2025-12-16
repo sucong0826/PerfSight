@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['collector.py'],
+    ['/Users/cleversu/Desktop/SourceCode/zoomgithub/PerfSight/perf-sight/src-tauri/python/collector.py'],
     pathex=[],
     binaries=[],
     datas=[],

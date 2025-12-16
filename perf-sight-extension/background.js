@@ -60,15 +60,21 @@ function handleProcessUpdate(processes) {
         const proc = processes[internalId];
         const pid = proc.osProcessId;
 
+        // Some process entries may not have a stable OS PID (0/undefined) on some platforms/updates.
+        // Skip them to avoid mixing keys and causing chart gaps/spikes.
+        if (!Number.isFinite(pid) || pid <= 0) continue;
+
         // Chrome API provides:
         // cpu: double (percentage)
         // privateMemory: double (bytes)
 
         // Convert to format: { cpu: %, memory: MB }
+        const cpu = Number.isFinite(proc.cpu) ? proc.cpu : 0.0;
+        const priv = Number.isFinite(proc.privateMemory) ? proc.privateMemory : 0;
         metricsPayload[pid] = {
-            cpu: proc.cpu || 0.0,
-            // 切换监听器后，proc.privateMemory 应该有值了
-            memory: (proc.privateMemory || 0) / (1024 * 1024)
+            cpu: cpu,
+            // PerfSight websocket expects memory in MB.
+            memory: priv / (1024 * 1024)
         };
     }
 

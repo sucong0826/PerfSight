@@ -8,6 +8,9 @@ interface ProcessListProps {
   isCollecting: boolean;
   mode: 'system' | 'browser';
   filterText: string;
+  durationMinutesText: string;
+  onDurationMinutesTextChange: (val: string) => void;
+  durationHint?: string | null;
   onFilterChange: (val: string) => void;
   onToggleSelection: (pid: number) => void;
   onRefresh: () => void;
@@ -26,7 +29,15 @@ const getProcessIcon = (type: string) => {
 
 export const ProcessList: React.FC<ProcessListProps> = ({
   processes, selectedPids, isCollecting, mode, 
-  filterText, onFilterChange, onToggleSelection, onRefresh, onStart, onStop
+  filterText,
+  durationMinutesText,
+  onDurationMinutesTextChange,
+  durationHint,
+  onFilterChange,
+  onToggleSelection,
+  onRefresh,
+  onStart,
+  onStop
 }) => {
   const filteredProcesses = processes.filter(p => 
     p.name.toLowerCase().includes(filterText.toLowerCase()) || 
@@ -92,7 +103,23 @@ export const ProcessList: React.FC<ProcessListProps> = ({
 
         <div className="mt-4 flex gap-3 pt-3 border-t border-slate-800">
             {!isCollecting ? (
-            <button onClick={onStart} disabled={selectedPids.size === 0} className="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg flex justify-center gap-2 items-center font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"><Play className="w-4 h-4" /> Start ({selectedPids.size})</button>
+            <div className="flex-1 space-y-2">
+              <div>
+                <div className="text-xs text-slate-500 mb-1">Duration (minutes, optional)</div>
+                <input
+                  value={durationMinutesText}
+                  onChange={(e) => onDurationMinutesTextChange(e.target.value)}
+                  disabled={isCollecting}
+                  inputMode="decimal"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 disabled:opacity-60"
+                  placeholder="e.g. 2 (auto-stop)"
+                />
+                {durationHint ? (
+                  <div className="mt-1 text-[11px] text-slate-500">{durationHint}</div>
+                ) : null}
+              </div>
+              <button onClick={onStart} disabled={selectedPids.size === 0} className="w-full bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg flex justify-center gap-2 items-center font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"><Play className="w-4 h-4" /> Start ({selectedPids.size})</button>
+            </div>
             ) : (
             <button onClick={onStop} className="flex-1 bg-rose-600 hover:bg-rose-500 text-white px-4 py-2 rounded-lg flex justify-center gap-2 items-center font-medium transition-colors"><Square className="w-4 h-4" /> Stop</button>
             )}

@@ -41,10 +41,17 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_process_list,
+            commands::get_collection_status,
             commands::start_collection,
             commands::stop_collection,
             commands::get_reports,
-            commands::get_report_detail
+            commands::get_report_detail,
+            commands::delete_report,
+            commands::delete_reports,
+            commands::debug_get_macos_rusage,
+            commands::export_report_pdf,
+            commands::export_report_dataset,
+            commands::import_report_dataset
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -43,6 +43,17 @@ pub struct CollectionConfig {
     pub target_pids: Vec<u32>,
     pub interval_ms: u64,
     pub mode: String, // "system" | "browser"
+    pub test_context: Option<TestContext>,
+    /// Optional: auto-stop after N seconds and generate report.
+    pub stop_after_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TestContext {
+    pub scenario_name: Option<String>,
+    pub build_id: Option<String>,
+    pub tags: Option<Vec<String>>,
+    pub notes: Option<String>,
 }
 
 // New Batch Metric for broadcasting
