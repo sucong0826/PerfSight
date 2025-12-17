@@ -10,6 +10,7 @@ import {
   CheckSquare,
   Square,
   Trash2,
+  RotateCcw,
 } from "lucide-react";
 
 interface ReportSummary {
@@ -17,6 +18,12 @@ interface ReportSummary {
   created_at: string;
   title: string;
   duration_seconds: number;
+  tags: string[];
+}
+
+interface TagStat {
+  tag: string;
+  count: number;
 }
 
 export const Reports: React.FC = () => {
@@ -26,6 +33,9 @@ export const Reports: React.FC = () => {
   const [confirmBulk, setConfirmBulk] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
+  const [knownTags, setKnownTags] = useState<TagStat[]>([]);
+  const [filterTags, setFilterTags] = useState<Set<string>>(new Set());
+  const [tagMatchMode, setTagMatchMode] = useState<"any" | "all">("any");
   const navigate = useNavigate();
 
   const loadReports = async () => {
@@ -35,18 +45,26 @@ export const Reports: React.FC = () => {
 
   useEffect(() => {
     loadReports().catch(console.error);
+    (async () => {
+      try {
+        const stats = (await invoke("get_known_tags")) as TagStat[];
+        setKnownTags(stats || []);
+      } catch {
+        // ignore
+      }
+    })();
   }, []);
 
   const toggleSelect = (id: number, e: React.MouseEvent) => {
     e.stopPropagation();
     const next = new Set(selectedIds);
     if (next.has(id)) next.delete(id);
-    else if (next.size < 2) next.add(id); // Limit to 2 for now
+    else if (next.size < 6) next.add(id); // Limit to 6 for readability/perf
     setSelectedIds(next);
   };
 
   const handleCompare = () => {
-    if (selectedIds.size !== 2) return;
+    if (selectedIds.size < 2) return;
     const ids = Array.from(selectedIds).join(",");
     navigate(`/compare?ids=${ids}`);
   };
@@ -84,16 +102,36 @@ export const Reports: React.FC = () => {
     }
   };
 
+  const matchesTagFilter = (report: ReportSummary) => {
+    if (!filterTags.size) return true;
+    const reportTags = (report.tags || []).map((t) => t.toLowerCase());
+    if (tagMatchMode === "all") {
+      // AND semantics: report must contain all selected tags
+      for (const ft of filterTags) {
+        if (!reportTags.includes(ft.toLowerCase())) return false;
+      }
+      return true;
+    }
+    // OR semantics: any selected tag matches
+    for (const ft of filterTags) {
+      if (reportTags.includes(ft.toLowerCase())) return true;
+    }
+    return false;
+  };
+
+  const filteredReports = reports.filter(matchesTagFilter);
+
   return (
-    <div className="h-full overflow-y-auto text-slate-200">
+    <div className="h-full overflow-y-auto bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-200">
       <div className="p-8 max-w-5xl mx-auto relative">
         <div className="flex justify-between items-center mb-6">
           <h1 className="text-2xl font-bold flex items-center gap-3">
-            <FileText className="w-6 h-6 text-indigo-500" /> Test Reports
+            <FileText className="w-6 h-6 text-indigo-600 dark:text-indigo-500" />{" "}
+            Test Reports
           </h1>
 
           <div className="flex items-center gap-3">
-            <label className="bg-slate-800 hover:bg-slate-700 text-white px-3 py-1.5 rounded-md text-sm font-medium cursor-pointer transition-colors">
+            <label className="bg-slate-900 hover:bg-slate-800 text-white px-3 py-1.5 rounded-md text-sm font-medium cursor-pointer transition-colors dark:bg-slate-800 dark:hover:bg-slate-700">
               {isImporting ? "Importing…" : "Import Dataset"}
               <input
                 type="file"
@@ -122,13 +160,13 @@ export const Reports: React.FC = () => {
               />
             </label>
             {selectedIds.size > 0 && (
-              <div className="flex items-center gap-4 bg-slate-900 border border-indigo-500/30 px-4 py-2 rounded-lg animate-in fade-in slide-in-from-bottom-2">
-                <span className="text-sm text-slate-300">
+              <div className="flex items-center gap-4 bg-white border border-indigo-500/30 px-4 py-2 rounded-lg animate-in fade-in slide-in-from-bottom-2 dark:bg-slate-900">
+                <span className="text-sm text-slate-700 dark:text-slate-300">
                   {selectedIds.size} selected
                 </span>
                 <button
                   onClick={handleCompare}
-                  disabled={selectedIds.size !== 2}
+                  disabled={selectedIds.size < 2}
                   className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white px-3 py-1.5 rounded-md text-sm font-medium flex items-center gap-2 transition-colors"
                 >
                   <GitCompare className="w-4 h-4" /> Compare
@@ -141,7 +179,7 @@ export const Reports: React.FC = () => {
                 </button>
                 <button
                   onClick={() => setSelectedIds(new Set())}
-                  className="text-xs text-slate-500 hover:text-slate-300"
+                  className="text-xs text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
                 >
                   Clear
                 </button>
@@ -149,6 +187,93 @@ export const Reports: React.FC = () => {
             )}
           </div>
         </div>
+
+        {(knownTags.length > 0 || filterTags.size > 0) && (
+          <div className="mb-4 bg-white border border-slate-200 rounded-xl p-4 dark:bg-slate-900 dark:border-slate-800">
+            <div className="flex items-center justify-between gap-4 flex-wrap">
+              <div className="text-sm text-slate-700 dark:text-slate-300">
+                Filter by tags
+                {filterTags.size > 0 && (
+                  <span className="text-slate-500">
+                    {" "}
+                    · {filterTags.size} selected
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-3">
+                <div className="flex bg-slate-100 p-1 rounded-lg border border-slate-200 dark:bg-slate-800 dark:border-slate-700">
+                  <button
+                    onClick={() => setTagMatchMode("any")}
+                    className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all ${
+                      tagMatchMode === "any"
+                        ? "bg-white text-slate-900 shadow-sm dark:bg-slate-950 dark:text-white"
+                        : "text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200"
+                    }`}
+                    title="Show reports that match any selected tag"
+                  >
+                    ANY
+                  </button>
+                  <button
+                    onClick={() => setTagMatchMode("all")}
+                    className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all ${
+                      tagMatchMode === "all"
+                        ? "bg-white text-slate-900 shadow-sm dark:bg-slate-950 dark:text-white"
+                        : "text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200"
+                    }`}
+                    title="Show reports that match all selected tags"
+                  >
+                    ALL
+                  </button>
+                </div>
+                {filterTags.size > 0 && (
+                  <button
+                    onClick={() => setFilterTags(new Set())}
+                    className="text-xs text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
+                  >
+                    Clear filters
+                  </button>
+                )}
+              </div>
+            </div>
+            {knownTags.length > 0 && (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {knownTags.slice(0, 40).map((t) => {
+                  const active = Array.from(filterTags).some(
+                    (x) => x.toLowerCase() === t.tag.toLowerCase()
+                  );
+                  return (
+                    <button
+                      key={`filter-${t.tag}`}
+                      onClick={() => {
+                        setFilterTags((prev) => {
+                          const next = new Set(prev);
+                          const key = t.tag;
+                          // toggle (case-insensitive)
+                          for (const existing of next) {
+                            if (existing.toLowerCase() === key.toLowerCase()) {
+                              next.delete(existing);
+                              return next;
+                            }
+                          }
+                          next.add(key);
+                          return next;
+                        });
+                      }}
+                      className={`px-2 py-1 rounded-md text-xs border transition-colors ${
+                        active
+                          ? "bg-indigo-600/10 border-indigo-500/30 text-indigo-700 dark:bg-indigo-600/20 dark:text-indigo-200"
+                          : "bg-slate-50 border-slate-200 text-slate-700 hover:border-slate-300 dark:bg-slate-950 dark:border-slate-800 dark:text-slate-300 dark:hover:border-slate-600"
+                      }`}
+                      title={t.count ? `Used in ${t.count} report(s)` : "Tag"}
+                    >
+                      {t.tag}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
 
         {confirmBulk && (
           <div className="mb-4 bg-rose-500/10 border border-rose-500/30 rounded-xl p-4 flex items-center justify-between">
@@ -159,7 +284,7 @@ export const Reports: React.FC = () => {
               <button
                 onClick={() => setConfirmBulk(false)}
                 disabled={isDeleting}
-                className="px-3 py-1.5 rounded-md text-sm bg-slate-800 hover:bg-slate-700 disabled:opacity-60"
+                className="px-3 py-1.5 rounded-md text-sm bg-slate-200 hover:bg-slate-100 text-slate-900 disabled:opacity-60 dark:bg-slate-800 dark:hover:bg-slate-700 dark:text-slate-200"
               >
                 Cancel
               </button>
@@ -175,23 +300,23 @@ export const Reports: React.FC = () => {
         )}
 
         <div className="space-y-3">
-          {reports.map((report) => {
+          {filteredReports.map((report) => {
             const isSelected = selectedIds.has(report.id);
             const isConfirmingThis = confirmDeleteId === report.id;
             return (
               <div
                 key={report.id}
                 onClick={() => navigate(`/report/${report.id}`)}
-                className={`bg-slate-900 border rounded-lg p-4 transition-colors flex items-center justify-between group cursor-pointer ${
+                className={`bg-white border rounded-lg p-4 transition-colors flex items-center justify-between group cursor-pointer dark:bg-slate-900 ${
                   isSelected
-                    ? "border-indigo-500 bg-indigo-900/10"
-                    : "border-slate-800 hover:border-indigo-500/50"
+                    ? "border-indigo-500 bg-indigo-600/5 dark:bg-indigo-900/10"
+                    : "border-slate-200 hover:border-indigo-500/50 dark:border-slate-800"
                 }`}
               >
                 <div className="flex items-center gap-4 min-w-0">
                   <button
                     onClick={(e) => toggleSelect(report.id, e)}
-                    className="text-slate-500 hover:text-indigo-400 transition-colors shrink-0"
+                    className="text-slate-500 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors shrink-0"
                     title="Select for compare"
                   >
                     {isSelected ? (
@@ -218,6 +343,42 @@ export const Reports: React.FC = () => {
                         {Math.round(report.duration_seconds)}s
                       </span>
                     </div>
+                    {(report.tags?.length ?? 0) > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {report.tags.slice(0, 12).map((t) => (
+                          <button
+                            key={`tag-${report.id}-${t}`}
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setFilterTags((prev) => {
+                                const next = new Set(prev);
+                                // toggle (case-insensitive)
+                                for (const existing of next) {
+                                  if (
+                                    existing.toLowerCase() === t.toLowerCase()
+                                  ) {
+                                    next.delete(existing);
+                                    return next;
+                                  }
+                                }
+                                next.add(t);
+                                return next;
+                              });
+                            }}
+                            className="px-2 py-0.5 rounded-md text-[11px] bg-slate-50 border border-slate-200 text-slate-600 hover:border-slate-300 dark:bg-slate-950 dark:border-slate-800 dark:text-slate-400 dark:hover:border-slate-600"
+                            title="Click to toggle filter"
+                          >
+                            {t}
+                          </button>
+                        ))}
+                        {report.tags.length > 12 && (
+                          <span className="text-[11px] text-slate-600">
+                            +{report.tags.length - 12}
+                          </span>
+                        )}
+                      </div>
+                    )}
                     {isConfirmingThis && (
                       <div className="mt-3 flex items-center gap-2">
                         <span className="text-xs text-rose-200">
@@ -252,23 +413,36 @@ export const Reports: React.FC = () => {
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
+                      navigate(`/retest/${report.id}`);
+                    }}
+                    className="text-slate-500 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors"
+                    title="Re-test with this report's configuration"
+                  >
+                    <RotateCcw className="w-5 h-5" />
+                  </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
                       setConfirmDeleteId((cur) =>
                         cur === report.id ? null : report.id
                       );
                     }}
-                    className="text-slate-500 hover:text-rose-400 transition-colors"
+                    className="text-slate-500 hover:text-rose-600 dark:hover:text-rose-400 transition-colors"
                     title="Delete report"
                   >
                     <Trash2 className="w-5 h-5" />
                   </button>
-                  <ChevronRight className="w-5 h-5 text-slate-600 group-hover:text-indigo-400" />
+                  <ChevronRight className="w-5 h-5 text-slate-400 group-hover:text-indigo-600 dark:text-slate-600 dark:group-hover:text-indigo-400" />
                 </div>
               </div>
             );
           })}
-          {reports.length === 0 && (
+          {filteredReports.length === 0 && (
             <div className="text-center text-slate-500 py-10">
-              No reports found. Run a test to generate one.
+              No reports found.
+              {filterTags.size > 0
+                ? " Try clearing tag filters."
+                : " Run a test to generate one."}
             </div>
           )}
         </div>

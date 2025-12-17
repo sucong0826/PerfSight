@@ -232,6 +232,7 @@ impl ResourceCollector for GeneralCollector {
 
                     results.push(ProcessInfo {
                         pid,
+                        alias: None,
                         name: "Chrome Tab".to_string(),
                         memory_usage: memory,
                         cpu_usage: cpu,
@@ -255,6 +256,7 @@ impl ResourceCollector for GeneralCollector {
                     }
                     results.push(ProcessInfo {
                         pid: *pid,
+                        alias: None,
                         name: "Chrome".to_string(),
                         memory_usage: info.private_mem_bytes.unwrap_or(0),
                         cpu_usage: 0.0,
@@ -302,6 +304,7 @@ impl ResourceCollector for GeneralCollector {
 
                 results.push(ProcessInfo {
                     pid: pid.as_u32(),
+                    alias: None,
                     name: name,
                     // sysinfo returns memory in bytes.
                     memory_usage: process.memory(),
@@ -392,8 +395,13 @@ impl ResourceCollector for GeneralCollector {
             // On macOS, Chrome Task Manager "Memory footprint" aligns better with phys_footprint
             // than RSS or CDP privateMemorySize (which may be absent depending on Chrome build).
             #[cfg(target_os = "macos")]
-            if point.memory_private.is_none() && pid < 90000 {
-                point.memory_private = macos_activity_monitor_memory_bytes(pid);
+            if pid < 90000 {
+                // Always capture footprint as a separate field so the frontend can choose it.
+                point.memory_footprint = macos_activity_monitor_memory_bytes(pid);
+                // And if CDP didn't provide private memory, fall back to footprint.
+                if point.memory_private.is_none() {
+                    point.memory_private = point.memory_footprint;
+                }
             }
         }
 

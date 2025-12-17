@@ -7,6 +7,8 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessInfo {
     pub pid: u32,
+    #[serde(default)]
+    pub alias: Option<String>,
     pub name: String,
     pub memory_usage: u64, // bytes
     pub cpu_usage: f32,    // percentage
@@ -38,12 +40,19 @@ pub struct MetricPoint {
     pub memory_private: Option<u64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProcessAlias {
+    pub pid: u32,
+    pub alias: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct CollectionConfig {
     pub target_pids: Vec<u32>,
     pub interval_ms: u64,
     pub mode: String, // "system" | "browser"
     pub test_context: Option<TestContext>,
+    pub process_aliases: Option<Vec<ProcessAlias>>,
     /// Optional: auto-stop after N seconds and generate report.
     pub stop_after_seconds: Option<u64>,
 }

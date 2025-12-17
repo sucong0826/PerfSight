@@ -31,6 +31,34 @@ interface TestContext {
   notes?: string | null;
 }
 
+interface TagStat {
+  tag: string;
+  count: number;
+}
+
+interface ProcessAlias {
+  pid: number;
+  alias: string;
+}
+
+const parseTags = (text: string) => {
+  const parts = (text || "")
+    .split(",")
+    .map((t) => t.trim())
+    .filter(Boolean);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const t of parts) {
+    const key = t.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(t);
+  }
+  return out;
+};
+
+const tagsToText = (tags: string[]) => tags.join(", ");
+
 const genBuildId = () => {
   // Short, human-friendly id for reports (no PII).
   try {
@@ -48,10 +76,15 @@ const genBuildId = () => {
 export const Dashboard: React.FC = () => {
   const [mode, setMode] = useState<"system" | "browser">("system");
   const [processes, setProcesses] = useState<ProcessInfo[]>([]);
-  const [metricStandard, setMetricStandard] = useState<"os" | "chrome">("os");
+  // In Browser API mode, we default to Chrome Task Manager-aligned metrics.
+  // If Chrome-aligned fields are missing for a PID, charts automatically fall back to OS metrics.
+  const metricStandard: "os" | "chrome" = mode === "browser" ? "chrome" : "os";
 
   const [selectedPids, setSelectedPids] = useState<Set<number>>(new Set());
   const [hiddenPids, setHiddenPids] = useState<Set<number>>(new Set());
+  const [processAliases, setProcessAliases] = useState<Record<number, string>>(
+    {}
+  );
 
   const [isCollecting, setIsCollecting] = useState(false);
   const [chartData, setChartData] = useState<any[]>([]);
@@ -60,6 +93,7 @@ export const Dashboard: React.FC = () => {
   const [scenarioName, setScenarioName] = useState("");
   const [buildId, setBuildId] = useState("");
   const [tagsText, setTagsText] = useState("");
+  const [knownTags, setKnownTags] = useState<TagStat[]>([]);
   const [notes, setNotes] = useState("");
   const [durationMinutesText, setDurationMinutesText] = useState("");
   const [durationHint, setDurationHint] = useState<string | null>(null);
@@ -82,11 +116,19 @@ export const Dashboard: React.FC = () => {
       try {
         isRehydratingRef.current = true;
         await ensureMetricListener();
+        // Load known tags (best-effort).
+        try {
+          const stats = (await invoke("get_known_tags")) as TagStat[];
+          setKnownTags(stats || []);
+        } catch {
+          // ignore
+        }
         const status = (await invoke("get_collection_status")) as {
           is_running: boolean;
           target_pids: number[];
           mode: "system" | "browser";
           test_context?: TestContext | null;
+          process_aliases?: ProcessAlias[] | null;
           started_at?: string | null;
           stop_after_seconds?: number | null;
         };
@@ -103,6 +145,16 @@ export const Dashboard: React.FC = () => {
             setTagsText((status.test_context.tags ?? []).join(", "));
             setNotes(status.test_context.notes ?? "");
           }
+          if (status.process_aliases && Array.isArray(status.process_aliases)) {
+            const map: Record<number, string> = {};
+            for (const a of status.process_aliases) {
+              const pid = Number((a as any).pid);
+              const alias = String((a as any).alias || "").trim();
+              if (!Number.isFinite(pid) || !alias) continue;
+              map[pid] = alias;
+            }
+            setProcessAliases(map);
+          }
 
           // Rehydrate auto-stop timer if configured.
           if (status.stop_after_seconds && status.started_at) {
@@ -111,7 +163,11 @@ export const Dashboard: React.FC = () => {
               const deadline = startedMs + status.stop_after_seconds * 1000;
               autoStopDeadlineMsRef.current = deadline;
               const remainingMs = deadline - Date.now();
-              setDurationMinutesText((status.stop_after_seconds / 60).toFixed(2).replace(/\.?0+$/, ""));
+              setDurationMinutesText(
+                (status.stop_after_seconds / 60)
+                  .toFixed(2)
+                  .replace(/\.?0+$/, "")
+              );
               if (remainingMs <= 0) {
                 // Already overdue -> stop immediately.
                 try {
@@ -122,12 +178,15 @@ export const Dashboard: React.FC = () => {
                   console.warn("Auto-stop failed during rehydrate", e);
                 }
               } else {
-                if (autoStopTimeoutRef.current) clearTimeout(autoStopTimeoutRef.current);
+                if (autoStopTimeoutRef.current)
+                  clearTimeout(autoStopTimeoutRef.current);
                 autoStopTimeoutRef.current = setTimeout(() => {
                   if (!isCollectingRef.current) return;
                   handleStop();
                 }, remainingMs);
-                setDurationHint(`Auto-stop in ~${Math.ceil(remainingMs / 1000)}s`);
+                setDurationHint(
+                  `Auto-stop in ~${Math.ceil(remainingMs / 1000)}s`
+                );
               }
             }
           } else {
@@ -152,8 +211,6 @@ export const Dashboard: React.FC = () => {
     // Enable live preview: Listen to metrics immediately
     ensureMetricListener();
     loadProcesses();
-    // Default standard per mode: Browser API -> Chrome Task Manager, System API -> OS.
-    setMetricStandard(mode === "browser" ? "chrome" : "os");
   }, [mode]);
 
   useEffect(() => {
@@ -233,10 +290,7 @@ export const Dashboard: React.FC = () => {
       const effectiveBuildId = buildId.trim() || genBuildId();
       if (!buildId.trim()) setBuildId(effectiveBuildId);
 
-      const tags = tagsText
-        .split(",")
-        .map((t) => t.trim())
-        .filter(Boolean);
+      const tags = parseTags(tagsText);
       const testContext: TestContext = {
         scenario_name: scenarioName.trim() || null,
         build_id: effectiveBuildId,
@@ -247,7 +301,17 @@ export const Dashboard: React.FC = () => {
       // Optional duration (minutes) -> seconds.
       const mins = parseFloat(durationMinutesText.trim());
       const stopAfterSeconds =
-        Number.isFinite(mins) && mins > 0 ? Math.max(1, Math.round(mins * 60)) : null;
+        Number.isFinite(mins) && mins > 0
+          ? Math.max(1, Math.round(mins * 60))
+          : null;
+
+      const process_aliases: ProcessAlias[] = pids
+        .map((pid) => {
+          const raw = (processAliases as any)[pid];
+          const alias = typeof raw === "string" ? raw.trim() : "";
+          return { pid, alias };
+        })
+        .filter((a) => a.alias.length > 0);
 
       await invoke("start_collection", {
         config: {
@@ -255,6 +319,7 @@ export const Dashboard: React.FC = () => {
           interval_ms: 1000,
           mode: mode,
           test_context: testContext,
+          process_aliases,
           stop_after_seconds: stopAfterSeconds,
         },
       });
@@ -352,23 +417,30 @@ export const Dashboard: React.FC = () => {
   };
 
   const selectedProcessList = processes.filter((p) => selectedPids.has(p.pid));
+  const selectedTags = parseTags(tagsText);
+  const knownTagSuggestions = knownTags
+    .map((t) => t.tag)
+    .filter(
+      (t) => !selectedTags.some((s) => s.toLowerCase() === t.toLowerCase())
+    )
+    .slice(0, 30);
 
   return (
-    <div className="flex flex-col h-full bg-slate-950 text-slate-200">
-      <header className="flex items-center justify-between px-6 py-4 bg-slate-900 border-b border-slate-800 shrink-0">
+    <div className="flex flex-col h-full bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-200">
+      <header className="flex items-center justify-between px-6 py-4 bg-white border-b border-slate-200 dark:bg-slate-900 dark:border-slate-800 shrink-0">
         <div className="flex items-center gap-3">
-          <Activity className="w-6 h-6 text-indigo-500" />
+          <Activity className="w-6 h-6 text-indigo-600 dark:text-indigo-500" />
           <h1 className="text-xl font-bold">PerfSight</h1>
-          <div className="h-6 w-px bg-slate-700 mx-2"></div>
+          <div className="h-6 w-px bg-slate-200 dark:bg-slate-700 mx-2"></div>
 
-          <div className="flex bg-slate-800 p-1 rounded-lg border border-slate-700">
+          <div className="flex bg-slate-100 p-1 rounded-lg border border-slate-200 dark:bg-slate-800 dark:border-slate-700">
             <button
               onClick={() => !isCollecting && setMode("system")}
               disabled={isCollecting}
               className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
                 mode === "system"
                   ? "bg-indigo-600 text-white shadow-sm"
-                  : "text-slate-400 hover:text-slate-200"
+                  : "text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200"
               } ${isCollecting ? "opacity-50 cursor-not-allowed" : ""}`}
             >
               System API
@@ -379,36 +451,19 @@ export const Dashboard: React.FC = () => {
               className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
                 mode === "browser"
                   ? "bg-indigo-600 text-white shadow-sm"
-                  : "text-slate-400 hover:text-slate-200"
+                  : "text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200"
               } ${isCollecting ? "opacity-50 cursor-not-allowed" : ""}`}
             >
               Browser API
             </button>
           </div>
           {mode === "browser" && (
-            <div className="ml-3 flex bg-slate-800 p-1 rounded-lg border border-slate-700">
-              <button
-                onClick={() => setMetricStandard("chrome")}
-                className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
-                  metricStandard === "chrome"
-                    ? "bg-slate-950 text-white shadow-sm"
-                    : "text-slate-400 hover:text-slate-200"
-                }`}
-                title="Match Chrome Task Manager"
-              >
+            <div className="ml-3 text-xs text-slate-500">
+              Using{" "}
+              <span className="text-slate-700 dark:text-slate-300">
                 Chrome Task Manager
-              </button>
-              <button
-                onClick={() => setMetricStandard("os")}
-                className={`px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
-                  metricStandard === "os"
-                    ? "bg-slate-950 text-white shadow-sm"
-                    : "text-slate-400 hover:text-slate-200"
-                }`}
-                title="Match System Task Manager / Activity Monitor (OS metrics)"
-              >
-                System Task Manager
-              </button>
+              </span>{" "}
+              metrics (auto-fallback to OS when unavailable).
             </div>
           )}
         </div>
@@ -417,7 +472,7 @@ export const Dashboard: React.FC = () => {
             className={`px-3 py-1 rounded-full text-sm font-medium ${
               isCollecting
                 ? "bg-emerald-500/10 text-emerald-400"
-                : "bg-slate-800 text-slate-400"
+                : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400"
             }`}
           >
             {isCollecting ? "Collecting" : "Idle"}
@@ -430,6 +485,16 @@ export const Dashboard: React.FC = () => {
           <ProcessList
             processes={processes}
             selectedPids={selectedPids}
+            processAliases={processAliases}
+            onRenameProcess={(pid, alias) => {
+              setProcessAliases((prev) => {
+                const next = { ...prev };
+                const trimmed = (alias || "").slice(0, 80).trim();
+                if (!trimmed) delete (next as any)[pid];
+                else (next as any)[pid] = trimmed;
+                return next;
+              });
+            }}
             isCollecting={isCollecting}
             mode={mode as any}
             filterText={filterText}
@@ -437,7 +502,10 @@ export const Dashboard: React.FC = () => {
             onDurationMinutesTextChange={(val) => {
               setDurationMinutesText(val);
               const mins = parseFloat(val.trim());
-              if (Number.isFinite(mins) && mins > 0) setDurationHint(`Will auto-stop after ~${Math.round(mins * 60)}s`);
+              if (Number.isFinite(mins) && mins > 0)
+                setDurationHint(
+                  `Will auto-stop after ~${Math.round(mins * 60)}s`
+                );
               else setDurationHint(null);
             }}
             durationHint={durationHint}
@@ -458,7 +526,7 @@ export const Dashboard: React.FC = () => {
           />
         </div>
         <div className="lg:col-span-3 h-full overflow-y-auto">
-          <div className="mb-4 bg-slate-900 border border-slate-800 rounded-xl p-4">
+          <div className="mb-4 bg-white border border-slate-200 rounded-xl p-4 dark:bg-slate-900 dark:border-slate-800">
             <div className="text-sm text-slate-500 uppercase font-bold mb-3">
               Test Context (saved into report metadata)
             </div>
@@ -469,7 +537,7 @@ export const Dashboard: React.FC = () => {
                   value={scenarioName}
                   onChange={(e) => setScenarioName(e.target.value)}
                   disabled={isCollecting}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 disabled:opacity-60"
+                  className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 disabled:opacity-60 dark:bg-slate-950 dark:border-slate-800 dark:text-slate-200 dark:placeholder:text-slate-600"
                   placeholder="e.g. Login + Feed scroll"
                 />
               </div>
@@ -479,19 +547,73 @@ export const Dashboard: React.FC = () => {
                   value={buildId}
                   onChange={(e) => setBuildId(e.target.value)}
                   disabled={isCollecting}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 disabled:opacity-60"
+                  className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 disabled:opacity-60 dark:bg-slate-950 dark:border-slate-800 dark:text-slate-200 dark:placeholder:text-slate-600"
                   placeholder="e.g. commit SHA / CI build number"
                 />
               </div>
               <div className="md:col-span-2">
-                <div className="text-xs text-slate-500 mb-1">Tags (comma-separated)</div>
+                <div className="text-xs text-slate-500 mb-1">
+                  Tags (comma-separated)
+                </div>
                 <input
                   value={tagsText}
                   onChange={(e) => setTagsText(e.target.value)}
                   disabled={isCollecting}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 disabled:opacity-60"
+                  className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 disabled:opacity-60 dark:bg-slate-950 dark:border-slate-800 dark:text-slate-200 dark:placeholder:text-slate-600"
                   placeholder="e.g. smoke, perf, macos"
                 />
+                {(selectedTags.length > 0 ||
+                  knownTagSuggestions.length > 0) && (
+                  <div className="mt-2 space-y-2">
+                    {selectedTags.length > 0 && (
+                      <div className="flex flex-wrap gap-2">
+                        {selectedTags.map((t) => (
+                          <button
+                            key={`sel-${t}`}
+                            type="button"
+                            disabled={isCollecting}
+                            onClick={() => {
+                              const next = selectedTags.filter(
+                                (x) => x.toLowerCase() !== t.toLowerCase()
+                              );
+                              setTagsText(tagsToText(next));
+                            }}
+                            className="px-2 py-1 rounded-md text-xs bg-indigo-600/10 border border-indigo-500/30 text-indigo-700 hover:bg-indigo-600/15 disabled:opacity-60 dark:bg-indigo-600/20 dark:text-indigo-200 dark:hover:bg-indigo-600/30"
+                            title="Click to remove"
+                          >
+                            {t}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    {knownTagSuggestions.length > 0 && (
+                      <div>
+                        <div className="text-[11px] text-slate-500 mb-1">
+                          Previously used tags (click to add)
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          {knownTagSuggestions.map((t) => (
+                            <button
+                              key={`known-${t}`}
+                              type="button"
+                              disabled={isCollecting}
+                              onClick={() => {
+                                const next = parseTags(
+                                  tagsToText([...selectedTags, t])
+                                );
+                                setTagsText(tagsToText(next));
+                              }}
+                              className="px-2 py-1 rounded-md text-xs bg-slate-50 border border-slate-200 text-slate-700 hover:border-slate-300 disabled:opacity-60 dark:bg-slate-900 dark:border-slate-700 dark:text-slate-300 dark:hover:border-slate-500"
+                              title="Click to add"
+                            >
+                              {t}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
               <div className="md:col-span-2">
                 <div className="text-xs text-slate-500 mb-1">Notes</div>
@@ -500,7 +622,7 @@ export const Dashboard: React.FC = () => {
                   onChange={(e) => setNotes(e.target.value)}
                   disabled={isCollecting}
                   rows={3}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 disabled:opacity-60"
+                  className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 disabled:opacity-60 dark:bg-slate-950 dark:border-slate-800 dark:text-slate-200 dark:placeholder:text-slate-600"
                   placeholder="Optional context for AI: feature flags, dataset size, etc."
                 />
               </div>
@@ -517,7 +639,7 @@ export const Dashboard: React.FC = () => {
               setHiddenPids(next);
             }}
             mode={mode as any}
-            metricStandard={mode === "browser" ? metricStandard : "os"}
+            metricStandard={metricStandard}
           />
         </div>
       </main>

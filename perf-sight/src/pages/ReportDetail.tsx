@@ -9,6 +9,10 @@ import {
   Download,
   Trash2,
   Info,
+  RotateCcw,
+  Pencil,
+  X,
+  Save,
 } from "lucide-react";
 import { PerformanceCharts, ProcessInfo } from "../components/Charts";
 import jsPDF from "jspdf";
@@ -102,7 +106,7 @@ const TipLabel: React.FC<{ label: string; tip?: string }> = ({
         <div className="relative">
           <button
             type="button"
-            className="text-slate-600 hover:text-slate-400"
+            className="text-slate-500 hover:text-slate-700 dark:text-slate-600 dark:hover:text-slate-400"
             title={tip}
             aria-label={`${label} info`}
             aria-expanded={open}
@@ -117,7 +121,7 @@ const TipLabel: React.FC<{ label: string; tip?: string }> = ({
           {open && (
             <div
               role="tooltip"
-              className="absolute z-50 right-0 mt-2 w-[320px] max-w-[80vw] bg-slate-950 border border-slate-700 text-slate-200 rounded-lg p-3 shadow-xl"
+              className="absolute z-50 right-0 mt-2 w-[320px] max-w-[80vw] bg-white border border-slate-200 text-slate-900 rounded-lg p-3 shadow-xl dark:bg-slate-950 dark:border-slate-700 dark:text-slate-200"
             >
               <div className="text-xs leading-relaxed">{tip}</div>
             </div>
@@ -161,7 +165,7 @@ const MetricLabel: React.FC<{ label: string; tip?: string }> = ({
         <div className="relative shrink-0">
           <button
             type="button"
-            className="text-slate-600 hover:text-slate-400"
+            className="text-slate-500 hover:text-slate-700 dark:text-slate-600 dark:hover:text-slate-400"
             title={tip}
             aria-label={`${label} info`}
             aria-expanded={open}
@@ -176,7 +180,7 @@ const MetricLabel: React.FC<{ label: string; tip?: string }> = ({
           {open && (
             <div
               role="tooltip"
-              className="absolute z-50 left-0 mt-2 w-[320px] max-w-[80vw] bg-slate-950 border border-slate-700 text-slate-200 rounded-lg p-3 shadow-xl"
+              className="absolute z-50 left-0 mt-2 w-[320px] max-w-[80vw] bg-white border border-slate-200 text-slate-900 rounded-lg p-3 shadow-xl dark:bg-slate-950 dark:border-slate-700 dark:text-slate-200"
             >
               <div className="text-xs leading-relaxed">{tip}</div>
             </div>
@@ -201,16 +205,40 @@ export const ReportDetail: React.FC = () => {
   const [isDeleting, setIsDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
+  const [isRenaming, setIsRenaming] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
+  const [isSavingTitle, setIsSavingTitle] = useState(false);
 
   useEffect(() => {
     if (!id) return;
     invoke("get_report_detail", { id: parseInt(id) })
       .then((data: any) => {
         setReport(data);
+        setTitleDraft(String(data?.title ?? ""));
         processData(data);
       })
       .catch(console.error);
   }, [id]);
+
+  const handleSaveTitle = async () => {
+    if (!report) return;
+    const nextTitle = titleDraft.trim();
+    if (!nextTitle) {
+      alert("Title cannot be empty");
+      return;
+    }
+    try {
+      setIsSavingTitle(true);
+      await invoke("update_report_title", { id: report.id, title: nextTitle });
+      setReport({ ...report, title: nextTitle });
+      setIsRenaming(false);
+    } catch (e) {
+      console.error("update_report_title failed", e);
+      alert("Failed to save title");
+    } finally {
+      setIsSavingTitle(false);
+    }
+  };
 
   const processData = (data: ReportDetailData) => {
     const flattenedData: any[] = [];
@@ -266,6 +294,7 @@ export const ReportDetail: React.FC = () => {
       const snap = snapshotByPid.get(pid);
       return {
         pid,
+        alias: snap?.alias ?? undefined,
         name: snap?.name ?? `Process ${pid}`,
         proc_type: snap?.proc_type ?? "Unknown",
         title: snap?.title ?? undefined,
@@ -381,7 +410,7 @@ export const ReportDetail: React.FC = () => {
       const memGrowth = linregSlope(s.memMb);
       return {
         pid,
-        title: snap?.title ?? snap?.name ?? `Process ${pid}`,
+        title: snap?.alias ?? snap?.title ?? snap?.name ?? `Process ${pid}`,
         proc_type: snap?.proc_type,
         avg_cpu: avgCpu,
         max_cpu: maxCpu,
@@ -720,18 +749,79 @@ export const ReportDetail: React.FC = () => {
   };
 
   return (
-    <div className="p-8 h-screen flex flex-col bg-slate-950 text-slate-200 overflow-hidden">
+    <div className="p-8 h-screen flex flex-col bg-slate-50 text-slate-900 overflow-hidden dark:bg-slate-950 dark:text-slate-200">
       <div className="flex items-center justify-between mb-6 shrink-0">
         <div className="flex items-center gap-4">
           <Link
             to="/reports"
-            className="p-2 hover:bg-slate-900 rounded-lg text-slate-400"
+            className="p-2 hover:bg-slate-100 rounded-lg text-slate-500 dark:hover:bg-slate-900 dark:text-slate-400"
           >
             <ArrowLeft className="w-5 h-5" />
           </Link>
-          <h1 className="text-xl font-bold">{report.title}</h1>
+          <div className="min-w-0">
+            {!isRenaming ? (
+              <div className="flex items-center gap-2 min-w-0">
+                <h1 className="text-xl font-bold truncate">{report.title}</h1>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTitleDraft(report.title || "");
+                    setIsRenaming(true);
+                  }}
+                  className="p-2 rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-700 dark:text-slate-400 dark:hover:bg-slate-900 dark:hover:text-slate-200"
+                  title="Rename report title"
+                >
+                  <Pencil className="w-4 h-4" />
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2">
+                <input
+                  value={titleDraft}
+                  onChange={(e) => setTitleDraft(e.target.value)}
+                  className="w-[420px] max-w-[60vw] bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 dark:bg-slate-950 dark:border-slate-800 dark:text-slate-200 dark:placeholder:text-slate-600"
+                  placeholder="Report title"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleSaveTitle();
+                    if (e.key === "Escape") {
+                      setIsRenaming(false);
+                      setTitleDraft(report.title || "");
+                    }
+                  }}
+                  autoFocus
+                />
+                <button
+                  type="button"
+                  onClick={handleSaveTitle}
+                  disabled={isSavingTitle}
+                  className="p-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 text-white"
+                  title="Save"
+                >
+                  <Save className="w-4 h-4" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsRenaming(false);
+                    setTitleDraft(report.title || "");
+                  }}
+                  className="p-2 rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-700 dark:text-slate-400 dark:hover:bg-slate-900 dark:hover:text-slate-200"
+                  title="Cancel"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            )}
+          </div>
         </div>
         <div className="flex items-center gap-3">
+          <Link
+            to={`/retest/${report.id}`}
+            className="flex items-center gap-2 bg-slate-900 hover:bg-slate-800 text-white px-4 py-2 rounded-lg font-medium transition-colors dark:bg-slate-800 dark:hover:bg-slate-700"
+            title="Re-test with this report's configuration"
+          >
+            <RotateCcw className="w-4 h-4" /> Re-test
+          </Link>
           <button
             onClick={() => setConfirmDelete(true)}
             disabled={isDeleting}
@@ -759,7 +849,7 @@ export const ReportDetail: React.FC = () => {
                 alert("Failed to export dataset");
               }
             }}
-            className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-white px-4 py-2 rounded-lg font-medium transition-colors"
+            className="flex items-center gap-2 bg-slate-900 hover:bg-slate-800 text-white px-4 py-2 rounded-lg font-medium transition-colors dark:bg-slate-800 dark:hover:bg-slate-700"
           >
             <Download className="w-4 h-4" /> Export Dataset
           </button>
@@ -776,7 +866,7 @@ export const ReportDetail: React.FC = () => {
               <button
                 onClick={() => setConfirmDelete(false)}
                 disabled={isDeleting}
-                className="px-3 py-1.5 rounded-md text-sm bg-slate-800 hover:bg-slate-700 disabled:opacity-60"
+                className="px-3 py-1.5 rounded-md text-sm bg-slate-200 hover:bg-slate-100 text-slate-900 disabled:opacity-60 dark:bg-slate-800 dark:hover:bg-slate-700 dark:text-slate-200"
               >
                 Cancel
               </button>
@@ -792,23 +882,23 @@ export const ReportDetail: React.FC = () => {
         )}
         {/* Added ID and padding for capture */}
         {report.meta && (
-          <div className="mb-6 bg-slate-900 border border-slate-800 rounded-xl p-5">
+          <div className="mb-6 bg-white border border-slate-200 rounded-xl p-5 dark:bg-slate-900 dark:border-slate-800">
             <div className="text-sm text-slate-500 uppercase font-bold mb-3">
               Metadata (for AI / reproducibility)
             </div>
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 text-sm">
-              <div className="bg-slate-950/50 border border-slate-800 rounded-lg p-3">
+              <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 dark:bg-slate-950/50 dark:border-slate-800">
                 <div className="text-xs text-slate-500 mb-2">Collection</div>
                 <div className="space-y-1">
                   <div className="flex justify-between gap-3">
                     <span className="text-slate-400">mode</span>
-                    <span className="tabular-nums text-slate-200">
+                    <span className="tabular-nums text-slate-900 dark:text-slate-200">
                       {report.meta?.collection?.mode ?? "—"}
                     </span>
                   </div>
                   <div className="flex justify-between gap-3">
                     <span className="text-slate-400">interval</span>
-                    <span className="tabular-nums text-slate-200">
+                    <span className="tabular-nums text-slate-900 dark:text-slate-200">
                       {report.meta?.collection?.interval_ms != null
                         ? `${report.meta.collection.interval_ms}ms`
                         : "—"}
@@ -816,7 +906,7 @@ export const ReportDetail: React.FC = () => {
                   </div>
                   <div className="flex justify-between gap-3">
                     <span className="text-slate-400">duration</span>
-                    <span className="tabular-nums text-slate-200">
+                    <span className="tabular-nums text-slate-900 dark:text-slate-200">
                       {report.meta?.collection?.duration_seconds != null
                         ? `${report.meta.collection.duration_seconds}s`
                         : "—"}
@@ -831,38 +921,56 @@ export const ReportDetail: React.FC = () => {
                 </div>
               </div>
 
-              <div className="bg-slate-950/50 border border-slate-800 rounded-lg p-3">
+              <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 dark:bg-slate-950/50 dark:border-slate-800">
                 <div className="text-xs text-slate-500 mb-2">Environment</div>
                 <div className="space-y-1">
                   <div className="flex justify-between gap-3">
                     <span className="text-slate-400">os</span>
-                    <span className="tabular-nums text-slate-200">
+                    <span className="tabular-nums text-slate-900 dark:text-slate-200">
                       {report.meta?.env?.os ?? "—"}
                     </span>
                   </div>
                   <div className="flex justify-between gap-3">
                     <span className="text-slate-400">os version</span>
-                    <span className="tabular-nums text-slate-200">
+                    <span className="tabular-nums text-slate-900 dark:text-slate-200">
                       {report.meta?.versions?.os_long_version ??
                         report.meta?.versions?.os_version ??
                         "—"}
                     </span>
                   </div>
                   <div className="flex justify-between gap-3">
+                    <span className="text-slate-400">device</span>
+                    <span className="tabular-nums text-slate-900 dark:text-slate-200">
+                      {report.meta?.env?.device_name ?? "—"}
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-3">
                     <span className="text-slate-400">arch</span>
-                    <span className="tabular-nums text-slate-200">
+                    <span className="tabular-nums text-slate-900 dark:text-slate-200">
                       {report.meta?.env?.arch ?? "—"}
                     </span>
                   </div>
                   <div className="flex justify-between gap-3">
+                    <span className="text-slate-400">cpu</span>
+                    <span className="tabular-nums text-slate-900 dark:text-slate-200">
+                      {report.meta?.env?.cpu_brand ?? "—"}
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-3">
                     <span className="text-slate-400">cpu cores</span>
-                    <span className="tabular-nums text-slate-200">
+                    <span className="tabular-nums text-slate-900 dark:text-slate-200">
                       {report.meta?.env?.cpu_logical_cores ?? "—"}
                     </span>
                   </div>
                   <div className="flex justify-between gap-3">
+                    <span className="text-slate-400">cpu phys</span>
+                    <span className="tabular-nums text-slate-900 dark:text-slate-200">
+                      {report.meta?.env?.cpu_physical_cores ?? "—"}
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-3">
                     <span className="text-slate-400">total RAM</span>
-                    <span className="tabular-nums text-slate-200">
+                    <span className="tabular-nums text-slate-900 dark:text-slate-200">
                       {report.meta?.env?.total_memory_bytes != null
                         ? `${Math.round(
                             report.meta.env.total_memory_bytes /
@@ -874,15 +982,21 @@ export const ReportDetail: React.FC = () => {
                     </span>
                   </div>
                   <div className="flex justify-between gap-3">
+                    <span className="text-slate-400">gpu</span>
+                    <span className="tabular-nums text-slate-900 dark:text-slate-200">
+                      {report.meta?.env?.gpu?.name ?? "—"}
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-3">
                     <span className="text-slate-400">app</span>
-                    <span className="tabular-nums text-slate-200">
+                    <span className="tabular-nums text-slate-900 dark:text-slate-200">
                       {report.meta?.app?.version ?? "—"}
                     </span>
                   </div>
                 </div>
               </div>
 
-              <div className="bg-slate-950/50 border border-slate-800 rounded-lg p-3">
+              <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 dark:bg-slate-950/50 dark:border-slate-800">
                 <div className="text-xs text-slate-500 mb-2">Targets</div>
                 <div className="text-xs text-slate-400">
                   {(report.meta?.collection?.target_pids ?? []).join(", ") ||
@@ -896,7 +1010,7 @@ export const ReportDetail: React.FC = () => {
                 </div>
                 <div className="mt-3 text-xs text-slate-500">
                   definitions:{" "}
-                  <span className="text-slate-300">
+                  <span className="text-slate-700 dark:text-slate-300">
                     system mem = RSS, browser mem = pmem→rss fallback
                   </span>
                 </div>
@@ -904,30 +1018,30 @@ export const ReportDetail: React.FC = () => {
             </div>
 
             {report.meta?.test_context && (
-              <div className="mt-4 bg-slate-950/50 border border-slate-800 rounded-lg p-3">
+              <div className="mt-4 bg-slate-50 border border-slate-200 rounded-lg p-3 dark:bg-slate-950/50 dark:border-slate-800">
                 <div className="text-xs text-slate-500 mb-2">Test Context</div>
                 <div className="grid grid-cols-1 lg:grid-cols-4 gap-3 text-sm">
                   <div>
                     <div className="text-xs text-slate-500 mb-1">Scenario</div>
-                    <div className="text-slate-200">
+                    <div className="text-slate-900 dark:text-slate-200">
                       {report.meta.test_context.scenario_name ?? "—"}
                     </div>
                   </div>
                   <div>
                     <div className="text-xs text-slate-500 mb-1">Build ID</div>
-                    <div className="text-slate-200 tabular-nums">
+                    <div className="text-slate-900 tabular-nums dark:text-slate-200">
                       {report.meta.test_context.build_id ?? "—"}
                     </div>
                   </div>
                   <div className="lg:col-span-2">
                     <div className="text-xs text-slate-500 mb-1">Tags</div>
-                    <div className="text-slate-200">
+                    <div className="text-slate-900 dark:text-slate-200">
                       {(report.meta.test_context.tags ?? []).join(", ") || "—"}
                     </div>
                   </div>
                   <div className="lg:col-span-4">
                     <div className="text-xs text-slate-500 mb-1">Notes</div>
-                    <div className="text-slate-200 whitespace-pre-wrap">
+                    <div className="text-slate-900 whitespace-pre-wrap dark:text-slate-200">
                       {report.meta.test_context.notes ?? "—"}
                     </div>
                   </div>
@@ -939,7 +1053,7 @@ export const ReportDetail: React.FC = () => {
         {report.analysis && (
           <div className="mb-6 grid grid-cols-1 lg:grid-cols-4 gap-4">
             {/* Score Card */}
-            <div className="bg-slate-900 border border-slate-800 p-5 rounded-xl flex flex-col items-center justify-center relative overflow-hidden">
+            <div className="bg-white border border-slate-200 p-5 rounded-xl flex flex-col items-center justify-center relative overflow-hidden dark:bg-slate-900 dark:border-slate-800">
               <div className="text-sm text-slate-500 uppercase font-bold mb-2">
                 Performance Score
               </div>
@@ -960,7 +1074,7 @@ export const ReportDetail: React.FC = () => {
             </div>
 
             {/* Per-process metrics (primary) */}
-            <div className="lg:col-span-3 bg-slate-900 border border-slate-800 p-5 rounded-xl">
+            <div className="lg:col-span-3 bg-white border border-slate-200 p-5 rounded-xl dark:bg-slate-900 dark:border-slate-800">
               <div className="text-sm text-slate-500 uppercase font-bold mb-3">
                 Per-Process Metrics (primary)
               </div>
@@ -968,7 +1082,7 @@ export const ReportDetail: React.FC = () => {
                 {perPidSummaries.map((p) => (
                   <div
                     key={`proc_${p.pid}`}
-                    className="bg-slate-950/50 border border-slate-800 rounded-lg p-4"
+                    className="bg-slate-50 border border-slate-200 rounded-lg p-4 dark:bg-slate-950/50 dark:border-slate-800"
                   >
                     <div className="flex items-center justify-between mb-2">
                       <div
@@ -1173,7 +1287,7 @@ export const ReportDetail: React.FC = () => {
             </div>
 
             {/* Overall (avg only) */}
-            <div className="bg-slate-900 border border-slate-800 p-5 rounded-xl">
+            <div className="bg-white border border-slate-200 p-5 rounded-xl dark:bg-slate-900 dark:border-slate-800">
               <div className="text-xs text-slate-500 uppercase font-bold mb-3">
                 Overall (avg only)
               </div>
@@ -1200,7 +1314,7 @@ export const ReportDetail: React.FC = () => {
             </div>
 
             {/* Insights */}
-            <div className="lg:col-span-3 bg-slate-900 border border-slate-800 p-5 rounded-xl overflow-y-auto max-h-[160px] custom-scrollbar">
+            <div className="lg:col-span-3 bg-white border border-slate-200 p-5 rounded-xl overflow-y-auto max-h-[160px] custom-scrollbar dark:bg-slate-900 dark:border-slate-800">
               <div className="text-sm text-slate-500 uppercase font-bold mb-3">
                 Insights
               </div>
@@ -1213,7 +1327,7 @@ export const ReportDetail: React.FC = () => {
                   {report.analysis.insights.map((insight, i) => (
                     <li
                       key={i}
-                      className="text-sm text-rose-300 flex gap-2 items-start"
+                      className="text-sm text-rose-700 flex gap-2 items-start dark:text-rose-300"
                     >
                       <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
                       <span>{insight}</span>
@@ -1230,14 +1344,14 @@ export const ReportDetail: React.FC = () => {
             (report.analysis.top_mem &&
               report.analysis.top_mem.length > 0)) && (
             <div className="mb-6 grid grid-cols-1 lg:grid-cols-2 gap-4">
-              <div className="bg-slate-900 border border-slate-800 p-5 rounded-xl">
+              <div className="bg-white border border-slate-200 p-5 rounded-xl dark:bg-slate-900 dark:border-slate-800">
                 <div className="text-sm text-slate-500 uppercase font-bold mb-3">
                   Top CPU Contributors
                 </div>
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>
-                      <tr className="text-slate-500 text-xs border-b border-slate-800">
+                      <tr className="text-slate-500 text-xs border-b border-slate-200 dark:border-slate-800">
                         <th className="text-left py-2 pr-3">PID</th>
                         <th className="text-left py-2 px-3">Process</th>
                         <th className="text-right py-2 px-3">Avg CPU</th>
@@ -1248,7 +1362,7 @@ export const ReportDetail: React.FC = () => {
                       {(report.analysis.top_cpu || []).map((c) => (
                         <tr
                           key={`cpu_${c.pid}`}
-                          className="border-b border-slate-800/50 hover:bg-slate-950/50 cursor-pointer"
+                          className="border-b border-slate-200 hover:bg-slate-50 cursor-pointer dark:border-slate-800/50 dark:hover:bg-slate-950/50"
                           onClick={() => {
                             const next = new Set(hiddenPids);
                             if (next.has(c.pid)) next.delete(c.pid);
@@ -1257,12 +1371,13 @@ export const ReportDetail: React.FC = () => {
                           }}
                           title="Click to toggle this PID visibility in charts"
                         >
-                          <td className="py-2 pr-3 text-slate-200 tabular-nums">
+                          <td className="py-2 pr-3 text-slate-900 tabular-nums dark:text-slate-200">
                             {c.pid}
                           </td>
-                          <td className="py-2 px-3 text-slate-200">
+                          <td className="py-2 px-3 text-slate-900 dark:text-slate-200">
                             <div className="truncate max-w-[260px]">
-                              {snapshotByPid.get(c.pid)?.title ||
+                              {snapshotByPid.get(c.pid)?.alias ||
+                                snapshotByPid.get(c.pid)?.title ||
                                 snapshotByPid.get(c.pid)?.name ||
                                 `Process ${c.pid}`}
                             </div>
@@ -1273,7 +1388,7 @@ export const ReportDetail: React.FC = () => {
                           <td className="py-2 px-3 text-right tabular-nums">
                             {c.avg_cpu.toFixed(1)}%
                           </td>
-                          <td className="py-2 pl-3 text-right tabular-nums text-slate-300">
+                          <td className="py-2 pl-3 text-right tabular-nums text-slate-600 dark:text-slate-300">
                             {(c.cpu_share * 100).toFixed(0)}%
                           </td>
                         </tr>
@@ -1283,14 +1398,14 @@ export const ReportDetail: React.FC = () => {
                 </div>
               </div>
 
-              <div className="bg-slate-900 border border-slate-800 p-5 rounded-xl">
+              <div className="bg-white border border-slate-200 p-5 rounded-xl dark:bg-slate-900 dark:border-slate-800">
                 <div className="text-sm text-slate-500 uppercase font-bold mb-3">
                   Top Memory Contributors
                 </div>
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>
-                      <tr className="text-slate-500 text-xs border-b border-slate-800">
+                      <tr className="text-slate-500 text-xs border-b border-slate-200 dark:border-slate-800">
                         <th className="text-left py-2 pr-3">PID</th>
                         <th className="text-left py-2 px-3">Process</th>
                         <th className="text-right py-2 px-3">Avg Mem</th>
@@ -1301,7 +1416,7 @@ export const ReportDetail: React.FC = () => {
                       {(report.analysis.top_mem || []).map((c) => (
                         <tr
                           key={`mem_${c.pid}`}
-                          className="border-b border-slate-800/50 hover:bg-slate-950/50 cursor-pointer"
+                          className="border-b border-slate-200 hover:bg-slate-50 cursor-pointer dark:border-slate-800/50 dark:hover:bg-slate-950/50"
                           onClick={() => {
                             const next = new Set(hiddenPids);
                             if (next.has(c.pid)) next.delete(c.pid);
@@ -1310,12 +1425,13 @@ export const ReportDetail: React.FC = () => {
                           }}
                           title="Click to toggle this PID visibility in charts"
                         >
-                          <td className="py-2 pr-3 text-slate-200 tabular-nums">
+                          <td className="py-2 pr-3 text-slate-900 tabular-nums dark:text-slate-200">
                             {c.pid}
                           </td>
-                          <td className="py-2 px-3 text-slate-200">
+                          <td className="py-2 px-3 text-slate-900 dark:text-slate-200">
                             <div className="truncate max-w-[260px]">
-                              {snapshotByPid.get(c.pid)?.title ||
+                              {snapshotByPid.get(c.pid)?.alias ||
+                                snapshotByPid.get(c.pid)?.title ||
                                 snapshotByPid.get(c.pid)?.name ||
                                 `Process ${c.pid}`}
                             </div>
@@ -1326,7 +1442,7 @@ export const ReportDetail: React.FC = () => {
                           <td className="py-2 px-3 text-right tabular-nums">
                             {c.avg_mem_mb.toFixed(0)} MB
                           </td>
-                          <td className="py-2 pl-3 text-right tabular-nums text-slate-300">
+                          <td className="py-2 pl-3 text-right tabular-nums text-slate-600 dark:text-slate-300">
                             {(c.mem_share * 100).toFixed(0)}%
                           </td>
                         </tr>
@@ -1339,7 +1455,7 @@ export const ReportDetail: React.FC = () => {
           )}
 
         {snapshotArr.length > 0 && (
-          <div className="mb-6 bg-slate-900 border border-slate-800 rounded-xl p-5">
+          <div className="mb-6 bg-white border border-slate-200 rounded-xl p-5 dark:bg-slate-900 dark:border-slate-800">
             <div className="flex items-center justify-between mb-3">
               <div className="text-sm text-slate-500 uppercase font-bold">
                 Process Snapshot
@@ -1347,14 +1463,14 @@ export const ReportDetail: React.FC = () => {
               <input
                 value={snapshotFilter}
                 onChange={(e) => setSnapshotFilter(e.target.value)}
-                className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 w-[320px]"
-                placeholder="Search pid/name/title/url/type…"
+                className="bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 w-[320px] dark:bg-slate-950 dark:border-slate-800 dark:text-slate-200 dark:placeholder:text-slate-600"
+                placeholder="Search pid/alias/name/title/url/type…"
               />
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="text-slate-500 text-xs border-b border-slate-800">
+                  <tr className="text-slate-500 text-xs border-b border-slate-200 dark:border-slate-800">
                     <th className="text-left py-2 pr-3">PID</th>
                     <th className="text-left py-2 px-3">Type</th>
                     <th className="text-left py-2 px-3">Title / Name</th>
@@ -1369,6 +1485,7 @@ export const ReportDetail: React.FC = () => {
                       const hay = [
                         String(p?.pid ?? ""),
                         String(p?.proc_type ?? ""),
+                        String(p?.alias ?? ""),
                         String(p?.title ?? ""),
                         String(p?.name ?? ""),
                         String(p?.url ?? ""),
@@ -1381,7 +1498,7 @@ export const ReportDetail: React.FC = () => {
                     .map((p) => (
                       <tr
                         key={`snap_${p.pid}`}
-                        className="border-b border-slate-800/50 hover:bg-slate-950/50 cursor-pointer"
+                        className="border-b border-slate-200 hover:bg-slate-50 cursor-pointer dark:border-slate-800/50 dark:hover:bg-slate-950/50"
                         onClick={() => {
                           const pid = p.pid as number;
                           const next = new Set(hiddenPids);
@@ -1391,18 +1508,18 @@ export const ReportDetail: React.FC = () => {
                         }}
                         title="Click to toggle this PID visibility in charts"
                       >
-                        <td className="py-2 pr-3 text-slate-200 tabular-nums">
+                        <td className="py-2 pr-3 text-slate-900 tabular-nums dark:text-slate-200">
                           {p.pid}
                         </td>
-                        <td className="py-2 px-3 text-slate-200">
+                        <td className="py-2 px-3 text-slate-900 dark:text-slate-200">
                           {p.proc_type ?? "—"}
                         </td>
-                        <td className="py-2 px-3 text-slate-200">
+                        <td className="py-2 px-3 text-slate-900 dark:text-slate-200">
                           <div className="truncate max-w-[420px]">
-                            {p.title ?? p.name ?? `Process ${p.pid}`}
+                            {p.alias ?? p.title ?? p.name ?? `Process ${p.pid}`}
                           </div>
                         </td>
-                        <td className="py-2 pl-3 text-slate-400">
+                        <td className="py-2 pl-3 text-slate-600 dark:text-slate-400">
                           <div className="truncate max-w-[520px]">
                             {p.url ?? "—"}
                           </div>

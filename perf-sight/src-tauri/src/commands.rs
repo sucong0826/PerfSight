@@ -4,9 +4,9 @@ use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 use tauri_plugin_shell::ShellExt;
 use tauri_plugin_shell::process::{CommandEvent, CommandChild};
-use crate::models::{CollectionConfig, ProcessInfo, BatchMetric, MetricPoint};
+use crate::models::{CollectionConfig, ProcessInfo, BatchMetric, MetricPoint, ProcessAlias};
 use crate::collector::create_collector;
-use crate::database::{Database, ReportSummary, ReportDetail};
+use crate::database::{Database, ReportSummary, ReportDetail, TagStat};
 use chrono::{Utc, TimeZone};
 use serde_json::json;
 use serde_json::Value;
@@ -26,6 +26,7 @@ pub struct CollectionState {
     pub interval_ms: Arc<Mutex<u64>>,
     pub started_at: Arc<Mutex<Option<String>>>,
     pub process_snapshot: Arc<Mutex<Vec<ProcessInfo>>>,
+    pub process_aliases: Arc<Mutex<Vec<ProcessAlias>>>,
     pub app_version: Arc<Mutex<String>>,
     pub test_context: Arc<Mutex<Option<Value>>>,
     pub stop_after_seconds: Arc<Mutex<Option<u64>>>,
@@ -42,6 +43,7 @@ impl CollectionState {
             interval_ms: Arc::new(Mutex::new(1000)),
             started_at: Arc::new(Mutex::new(None)),
             process_snapshot: Arc::new(Mutex::new(Vec::new())),
+            process_aliases: Arc::new(Mutex::new(Vec::new())),
             app_version: Arc::new(Mutex::new("unknown".to_string())),
             test_context: Arc::new(Mutex::new(None)),
             stop_after_seconds: Arc::new(Mutex::new(None)),
@@ -57,6 +59,7 @@ pub struct CollectionStatus {
     pub interval_ms: u64,
     pub started_at: Option<String>,
     pub test_context: Option<Value>,
+    pub process_aliases: Vec<ProcessAlias>,
     pub stop_after_seconds: Option<u64>,
 }
 
@@ -69,6 +72,7 @@ pub fn get_collection_status(state: State<'_, CollectionState>) -> Result<Collec
         interval_ms: *safe_lock(&state.interval_ms),
         started_at: safe_lock(&state.started_at).clone(),
         test_context: safe_lock(&state.test_context).clone(),
+        process_aliases: safe_lock(&state.process_aliases).clone(),
         stop_after_seconds: *safe_lock(&state.stop_after_seconds),
     })
 }
@@ -381,6 +385,7 @@ pub async fn get_process_list(
                                 for p in arr {
                                     processes.push(ProcessInfo {
                                         pid: p["pid"].as_u64().unwrap_or(0) as u32,
+                                        alias: None,
                                         name: p["name"].as_str().unwrap_or("chrome").to_string(),
                                         memory_usage: p["memory"].as_u64().unwrap_or(0),
                                         cpu_usage: 0.0,
@@ -427,16 +432,33 @@ pub async fn start_collection(
         .test_context
         .as_ref()
         .map(|tc| serde_json::to_value(tc).unwrap_or_else(|_| json!({})));
+    *safe_lock(&state.process_aliases) = config.process_aliases.clone().unwrap_or_default();
     *safe_lock(&state.stop_after_seconds) = config.stop_after_seconds;
 
     // Capture a process snapshot for the selected PIDs (best effort).
     let snapshot = tokio::task::spawn_blocking({
         let mode = config.mode.clone();
         let pids = config.target_pids.clone();
+        let aliases = config.process_aliases.clone().unwrap_or_default();
         move || {
+            let alias_map: std::collections::HashMap<u32, String> = aliases
+                .into_iter()
+                .map(|a| (a.pid, a.alias))
+                .collect();
             let mut collector = create_collector(&mode);
             let list = collector.scan_processes(&mode);
-            list.into_iter().filter(|p| pids.contains(&p.pid)).collect::<Vec<ProcessInfo>>()
+            list.into_iter()
+                .filter(|p| pids.contains(&p.pid))
+                .map(|mut p| {
+                    if let Some(a) = alias_map.get(&p.pid) {
+                        let s = a.trim();
+                        if !s.is_empty() {
+                            p.alias = Some(s.to_string());
+                        }
+                    }
+                    p
+                })
+                .collect::<Vec<ProcessInfo>>()
         }
     })
     .await
@@ -582,9 +604,16 @@ pub async fn stop_collection(
         let stop_after_seconds = *safe_lock(&state.stop_after_seconds);
 
         let cpu_count = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
-        let total_mem_bytes = sysinfo::System::new().total_memory(); // bytes (sysinfo 0.30)
+        let mut sys = sysinfo::System::new_all();
+        sys.refresh_all();
+        let total_mem_bytes = sys.total_memory(); // bytes (sysinfo 0.30)
         let os_version = sysinfo::System::os_version();
         let long_os_version = sysinfo::System::long_os_version();
+        let device_name = sysinfo::System::host_name();
+        let cpu_physical_cores = sys.physical_core_count();
+        let cpu_brand = sys.cpus().first().map(|c| c.brand().to_string());
+        let cpu_vendor = sys.cpus().first().map(|c| c.vendor_id().to_string());
+        let cpu_frequency_mhz = sys.cpus().first().map(|c| c.frequency());
 
         let duration_seconds = if let Some(first) = buffer.first() {
             if let Some(last) = buffer.last() {
@@ -617,8 +646,14 @@ pub async fn stop_collection(
             "env": {
                 "os": std::env::consts::OS,
                 "arch": std::env::consts::ARCH,
+                "device_name": device_name,
                 "cpu_logical_cores": cpu_count,
-                "total_memory_bytes": total_mem_bytes
+                "cpu_physical_cores": cpu_physical_cores,
+                "cpu_brand": cpu_brand,
+                "cpu_vendor": cpu_vendor,
+                "cpu_frequency_mhz": cpu_frequency_mhz,
+                "total_memory_bytes": total_mem_bytes,
+                "gpu": { "name": null }
             },
             "collection": {
                 "mode": mode,
@@ -631,6 +666,7 @@ pub async fn stop_collection(
                 "stop_after_seconds": stop_after_seconds
             },
             "test_context": test_context,
+            "process_aliases": safe_lock(&state.process_aliases).clone(),
             "process_snapshot": process_snapshot
         });
 
@@ -644,6 +680,7 @@ pub async fn stop_collection(
         *safe_lock(&state.interval_ms) = 1000;
         *safe_lock(&state.started_at) = None;
         safe_lock(&state.process_snapshot).clear();
+        safe_lock(&state.process_aliases).clear();
         *safe_lock(&state.test_context) = None;
         return Ok("Stopped and Saved Report".to_string());
     }
@@ -655,6 +692,7 @@ pub async fn stop_collection(
     *safe_lock(&state.interval_ms) = 1000;
     *safe_lock(&state.started_at) = None;
     safe_lock(&state.process_snapshot).clear();
+    safe_lock(&state.process_aliases).clear();
     *safe_lock(&state.test_context) = None;
     Ok("Stopped (No Data)".to_string())
 }
@@ -662,6 +700,11 @@ pub async fn stop_collection(
 #[tauri::command]
 pub fn get_reports(db: State<'_, Database>) -> Result<Vec<ReportSummary>, String> {
     db.get_all_reports().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_known_tags(db: State<'_, Database>) -> Result<Vec<TagStat>, String> {
+    db.get_known_tags().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -677,6 +720,15 @@ pub fn delete_report(db: State<'_, Database>, id: i64) -> Result<usize, String> 
 #[tauri::command]
 pub fn delete_reports(db: State<'_, Database>, ids: Vec<i64>) -> Result<usize, String> {
     db.delete_reports(&ids).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn update_report_title(db: State<'_, Database>, id: i64, title: String) -> Result<usize, String> {
+    let t = title.trim().to_string();
+    if t.is_empty() {
+        return Err("Title cannot be empty".to_string());
+    }
+    db.update_report_title(id, &t).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

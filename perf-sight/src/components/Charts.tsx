@@ -13,9 +13,11 @@ import {
   ReferenceLine,
 } from "recharts";
 import { LayoutGrid, Rows, Cpu, Database } from "lucide-react";
+import { useTheme } from "../theme";
 
 export interface ProcessInfo {
   pid: number;
+  alias?: string | null;
   name: string;
   memory_usage: number;
   cpu_usage: number;
@@ -53,6 +55,12 @@ const getColor = (index: number) => {
     "#d946ef",
   ];
   return colors[index % colors.length];
+};
+
+const displayProcessLabel = (p: ProcessInfo) => {
+  const alias = (p.alias || "").trim();
+  const base = alias ? alias : (p.title || p.name);
+  return `${base} (${p.pid})`;
 };
 
 const median = (arr: number[]) => {
@@ -169,6 +177,12 @@ export const PerformanceCharts: React.FC<ChartsProps> = ({
   mode,
   metricStandard,
 }) => {
+  const { theme } = useTheme();
+  const isDark = theme === "dark";
+  const gridStroke = isDark ? "#1e293b" : "#e2e8f0"; // slate-800 / slate-200
+  const axisStroke = isDark ? "#475569" : "#94a3b8"; // slate-600 / slate-400
+  const tickFill = isDark ? "#94a3b8" : "#64748b"; // slate-400 / slate-500
+
   const [viewMode, setViewMode] = useState<"combined" | "split">("combined");
   const [showAnomalyDots, setShowAnomalyDots] = useState(true);
   const [showAnnotations, setShowAnnotations] = useState(true);
@@ -415,7 +429,7 @@ export const PerformanceCharts: React.FC<ChartsProps> = ({
           cy={cy}
           r={4}
           fill="#fb7185" // rose-400
-          stroke="#0f172a"
+          stroke={isDark ? "#0f172a" : "#f8fafc"}
           strokeWidth={1.5}
         />
       ) : (
@@ -442,20 +456,22 @@ export const PerformanceCharts: React.FC<ChartsProps> = ({
       );
 
     return (
-      <div className="bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100">
-        <div className="text-slate-300 mb-1">
+      <div className="bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs text-slate-900 dark:bg-slate-950 dark:border-slate-700 dark:text-slate-100">
+        <div className="text-slate-600 mb-1 dark:text-slate-300">
           {new Date(label).toLocaleTimeString()}
         </div>
         {payload.map((p: any) => (
           <div key={p.dataKey} className="flex justify-between gap-4">
-            <span className="text-slate-300">{p.name ?? p.dataKey}</span>
+            <span className="text-slate-600 dark:text-slate-300">
+              {p.name ?? p.dataKey}
+            </span>
             <span className="tabular-nums">
               {typeof p.value === "number" ? `${p.value.toFixed(1)}%` : "—"}
             </span>
           </div>
         ))}
         {(inHigh || isChange || anySpike) && (
-          <div className="mt-2 pt-2 border-t border-slate-800 text-slate-300 space-y-1">
+          <div className="mt-2 pt-2 border-t border-slate-200 text-slate-600 space-y-1 dark:border-slate-800 dark:text-slate-300">
             {inHigh && <div>Annotated: sustained high CPU window</div>}
             {isChange && <div>Annotated: change point (level shift)</div>}
             {anySpike && <div>Annotated: spike (MAD outlier)</div>}
@@ -484,20 +500,22 @@ export const PerformanceCharts: React.FC<ChartsProps> = ({
       );
 
     return (
-      <div className="bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100">
-        <div className="text-slate-300 mb-1">
+      <div className="bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs text-slate-900 dark:bg-slate-950 dark:border-slate-700 dark:text-slate-100">
+        <div className="text-slate-600 mb-1 dark:text-slate-300">
           {new Date(label).toLocaleTimeString()}
         </div>
         {payload.map((p: any) => (
           <div key={p.dataKey} className="flex justify-between gap-4">
-            <span className="text-slate-300">{p.name ?? p.dataKey}</span>
+            <span className="text-slate-600 dark:text-slate-300">
+              {p.name ?? p.dataKey}
+            </span>
             <span className="tabular-nums">
               {typeof p.value === "number" ? formatBytes(p.value) : "—"}
             </span>
           </div>
         ))}
         {(inHigh || isChange || anySpike) && (
-          <div className="mt-2 pt-2 border-t border-slate-800 text-slate-300 space-y-1">
+          <div className="mt-2 pt-2 border-t border-slate-200 text-slate-600 space-y-1 dark:border-slate-800 dark:text-slate-300">
             {inHigh && <div>Annotated: sustained high memory window</div>}
             {isChange && <div>Annotated: change point (level shift)</div>}
             {anySpike && <div>Annotated: spike</div>}
@@ -520,9 +538,11 @@ export const PerformanceCharts: React.FC<ChartsProps> = ({
     <div className="space-y-6">
       {/* Live numeric readouts */}
       {selectedProcesses.length > 0 && (
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-xl">
+        <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xl dark:bg-slate-900 dark:border-slate-800">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="text-slate-400 font-medium">Live Metrics</h3>
+            <h3 className="text-slate-700 font-medium dark:text-slate-400">
+              Live Metrics
+            </h3>
             <div className="text-xs text-slate-500">
               {latestTimestamp
                 ? new Date(latestTimestamp).toLocaleTimeString()
@@ -558,18 +578,18 @@ export const PerformanceCharts: React.FC<ChartsProps> = ({
               return (
                 <div
                   key={`live_${p.pid}`}
-                  className={`rounded-lg border p-4 bg-slate-950/50 ${
+                  className={`rounded-lg border p-4 bg-slate-50 ${
                     hiddenPids.has(p.pid)
-                      ? "border-slate-800 opacity-60"
-                      : "border-slate-800"
-                  }`}
+                      ? "border-slate-200 opacity-60 dark:border-slate-800"
+                      : "border-slate-200 dark:border-slate-800"
+                  } dark:bg-slate-950/50`}
                 >
                   <div className="flex items-center justify-between mb-2">
                     <div
                       className="text-sm font-medium truncate"
-                      title={p.title || p.name}
+                      title={displayProcessLabel(p)}
                     >
-                      {p.title || p.name}
+                      {p.alias?.trim() ? p.alias.trim() : (p.title || p.name)}
                     </div>
                     <div
                       className="text-xs text-slate-500 shrink-0"
@@ -584,7 +604,7 @@ export const PerformanceCharts: React.FC<ChartsProps> = ({
                       <div className="text-xs text-slate-500 mb-1">
                         CPU ({cpuLabel})
                       </div>
-                      <div className="text-lg font-semibold text-slate-100 tabular-nums">
+                      <div className="text-lg font-semibold text-slate-900 tabular-nums dark:text-slate-100">
                         {typeof cpu === "number" ? `${cpu.toFixed(1)}%` : "—"}
                       </div>
                     </div>
@@ -597,20 +617,20 @@ export const PerformanceCharts: React.FC<ChartsProps> = ({
                             : "(RSS)"
                           : "(RSS)"}
                       </div>
-                      <div className="text-lg font-semibold text-slate-100 tabular-nums">
+                      <div className="text-lg font-semibold text-slate-900 tabular-nums dark:text-slate-100">
                         {typeof mem === "number" ? formatBytes(mem) : "—"}
                       </div>
                     </div>
                   </div>
 
                   {mode === "browser" && (
-                    <div className="mt-3 pt-3 border-t border-slate-800/70">
+                    <div className="mt-3 pt-3 border-t border-slate-200 dark:border-slate-800/70">
                       <div className="grid grid-cols-2 gap-3">
                         <div>
                           <div className="text-xs text-slate-500 mb-1">
                             JS Heap
                           </div>
-                          <div className="text-base font-semibold text-slate-100 tabular-nums">
+                          <div className="text-base font-semibold text-slate-900 tabular-nums dark:text-slate-100">
                             {typeof heap === "number" ? formatBytes(heap) : "—"}
                           </div>
                         </div>
@@ -618,7 +638,7 @@ export const PerformanceCharts: React.FC<ChartsProps> = ({
                           <div className="text-xs text-slate-500 mb-1">
                             Memory (Chrome)
                           </div>
-                          <div className="text-base font-semibold text-slate-100 tabular-nums">
+                          <div className="text-base font-semibold text-slate-900 tabular-nums dark:text-slate-100">
                             {typeof pmem === "number" ? formatBytes(pmem) : "—"}
                           </div>
                         </div>
@@ -627,7 +647,7 @@ export const PerformanceCharts: React.FC<ChartsProps> = ({
                         typeof rss === "number" && (
                           <div className="mt-2 text-xs text-slate-500">
                             OS RSS (reference):{" "}
-                            <span className="tabular-nums text-slate-300">
+                            <span className="tabular-nums text-slate-600 dark:text-slate-300">
                               {formatBytes(rss)}
                             </span>
                           </div>
@@ -642,15 +662,15 @@ export const PerformanceCharts: React.FC<ChartsProps> = ({
       )}
       {/* Chart 1: CPU */}
       <div
-        className={`bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-xl ${
+        className={`bg-white border border-slate-200 rounded-xl p-5 shadow-xl dark:bg-slate-900 dark:border-slate-800 ${
           viewMode === "split" ? "h-auto" : "h-[300px]"
         }`}
       >
         <div className="flex justify-between items-center mb-4">
-          <h3 className="text-slate-400 font-medium flex items-center gap-2">
+          <h3 className="text-slate-700 font-medium flex items-center gap-2 dark:text-slate-400">
             <Cpu className="w-4 h-4" /> CPU Load ({cpuLabel})
           </h3>
-          <div className="flex items-center gap-3 text-xs text-slate-400">
+          <div className="flex items-center gap-3 text-xs text-slate-600 dark:text-slate-400">
             <label className="flex items-center gap-2">
               <input
                 type="checkbox"
@@ -668,13 +688,13 @@ export const PerformanceCharts: React.FC<ChartsProps> = ({
               Spike dots
             </label>
           </div>
-          <div className="flex bg-slate-950 p-1 rounded-lg border border-slate-800">
+          <div className="flex bg-slate-100 p-1 rounded-lg border border-slate-200 dark:bg-slate-950 dark:border-slate-800">
             <button
               onClick={() => setViewMode("combined")}
               className={`p-1.5 rounded ${
                 viewMode === "combined"
-                  ? "bg-slate-800 text-white"
-                  : "text-slate-400 hover:text-slate-200"
+                  ? "bg-white text-slate-900 shadow-sm dark:bg-slate-800 dark:text-white"
+                  : "text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200"
               }`}
               title="Combined View"
             >
@@ -684,8 +704,8 @@ export const PerformanceCharts: React.FC<ChartsProps> = ({
               onClick={() => setViewMode("split")}
               className={`p-1.5 rounded ${
                 viewMode === "split"
-                  ? "bg-slate-800 text-white"
-                  : "text-slate-400 hover:text-slate-200"
+                  ? "bg-white text-slate-900 shadow-sm dark:bg-slate-800 dark:text-white"
+                  : "text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200"
               }`}
               title="Split View"
             >
@@ -698,15 +718,16 @@ export const PerformanceCharts: React.FC<ChartsProps> = ({
           <div className="w-full h-[220px]">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={data}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
                 <XAxis
                   dataKey="timestamp"
                   tickFormatter={(time) => new Date(time).toLocaleTimeString()}
                   minTickGap={50}
-                  stroke="#475569"
+                  stroke={axisStroke}
+                  tick={{ fill: tickFill }}
                   fontSize={10}
                 />
-                <YAxis stroke="#475569" fontSize={12} />
+                <YAxis stroke={axisStroke} tick={{ fill: tickFill }} fontSize={12} />
                 <Tooltip content={<CpuTooltip />} />
                 <Legend
                   onClick={(e) => {
@@ -719,7 +740,10 @@ export const PerformanceCharts: React.FC<ChartsProps> = ({
                       }
                     }
                   }}
-                  wrapperStyle={{ cursor: "pointer" }}
+                  wrapperStyle={{
+                    cursor: "pointer",
+                    color: isDark ? "#cbd5e1" : "#334155",
+                  }}
                 />
                 {/* CPU annotations (combined): sustained-high ranges + change points */}
                 {showAnnotations &&
@@ -756,7 +780,7 @@ export const PerformanceCharts: React.FC<ChartsProps> = ({
                     <Line
                       key={`${keyPrefix}_${p.pid}`}
                       hide={hiddenPids.has(p.pid)}
-                      name={`${p.name} (${p.pid})`}
+                      name={displayProcessLabel(p)}
                       type="monotone"
                       dataKey={`${keyPrefix}_${p.pid}`}
                       stroke={getColor(idx)}
@@ -775,7 +799,7 @@ export const PerformanceCharts: React.FC<ChartsProps> = ({
                   dataKey="timestamp"
                   height={30}
                   stroke="#4f46e5"
-                  fill="#1e293b"
+                  fill={isDark ? "#1e293b" : "#e2e8f0"}
                   tickFormatter={() => ""}
                 />
               </LineChart>
@@ -788,7 +812,7 @@ export const PerformanceCharts: React.FC<ChartsProps> = ({
               .map((p, idx) => (
                 <div
                   key={`cpu_split_${p.pid}`}
-                  className="h-[150px] border-b border-slate-800/50 pb-2"
+                  className="h-[150px] border-b border-slate-200 pb-2 dark:border-slate-800/50"
                 >
                   <div className="text-xs text-slate-500 mb-1 flex justify-between">
                     <span>
@@ -798,9 +822,14 @@ export const PerformanceCharts: React.FC<ChartsProps> = ({
                   </div>
                   <ResponsiveContainer width="100%" height="100%">
                     <LineChart data={data}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                      <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
                       <XAxis dataKey="timestamp" hide />
-                      <YAxis stroke="#475569" fontSize={10} width={30} />
+                      <YAxis
+                        stroke={axisStroke}
+                        tick={{ fill: tickFill }}
+                        fontSize={10}
+                        width={30}
+                      />
                       <Tooltip
                         content={<CpuTooltip />}
                         labelStyle={{ display: "none" }}
@@ -839,11 +868,11 @@ export const PerformanceCharts: React.FC<ChartsProps> = ({
       </div>
       {/* Chart 2: Memory */}
       <div
-        className={`bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-xl ${
+        className={`bg-white border border-slate-200 rounded-xl p-5 shadow-xl dark:bg-slate-900 dark:border-slate-800 ${
           viewMode === "split" ? "h-auto" : "h-[300px]"
         }`}
       >
-        <h3 className="text-slate-400 font-medium mb-4 flex items-center gap-2">
+        <h3 className="text-slate-700 font-medium mb-4 flex items-center gap-2 dark:text-slate-400">
           <Database className="w-4 h-4" /> Memory Usage ({memLabel}){" "}
           {mode === "browser"
             ? metricStandard === "chrome"
@@ -856,16 +885,18 @@ export const PerformanceCharts: React.FC<ChartsProps> = ({
           <div className="w-full h-[220px]">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={data}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
                 <XAxis
                   dataKey="timestamp"
                   tickFormatter={(time) => new Date(time).toLocaleTimeString()}
                   minTickGap={50}
-                  stroke="#475569"
+                  stroke={axisStroke}
+                  tick={{ fill: tickFill }}
                   fontSize={10}
                 />
                 <YAxis
-                  stroke="#475569"
+                  stroke={axisStroke}
+                  tick={{ fill: tickFill }}
                   fontSize={12}
                   tickFormatter={(val) => (val / 1024 / 1024).toFixed(0)}
                 />
@@ -881,7 +912,10 @@ export const PerformanceCharts: React.FC<ChartsProps> = ({
                       }
                     }
                   }}
-                  wrapperStyle={{ cursor: "pointer" }}
+                  wrapperStyle={{
+                    cursor: "pointer",
+                    color: isDark ? "#cbd5e1" : "#334155",
+                  }}
                 />
                 {/* Memory annotations (combined): sustained-high ranges + change points */}
                 {showAnnotations &&
@@ -913,12 +947,16 @@ export const PerformanceCharts: React.FC<ChartsProps> = ({
                     preferChromeMem ? ["pmem", "foot", "rss"] : ["foot", "rss"]
                   );
                   const seriesLabel =
-                    keyPrefix === "pmem" ? "Footprint" : "RSS";
+                    keyPrefix === "pmem"
+                      ? "Private/Footprint"
+                      : keyPrefix === "foot"
+                      ? "Footprint"
+                      : "RSS";
                   return (
                     <Line
                       key={`${keyPrefix}_${p.pid}`}
                       hide={hiddenPids.has(p.pid)}
-                      name={`${seriesLabel} ${p.pid}`}
+                      name={`${seriesLabel} ${displayProcessLabel(p)}`}
                       type="monotone"
                       dataKey={`${keyPrefix}_${p.pid}`}
                       stroke={getColor(idx)}
@@ -937,7 +975,7 @@ export const PerformanceCharts: React.FC<ChartsProps> = ({
                   dataKey="timestamp"
                   height={30}
                   stroke="#34d399"
-                  fill="#1e293b"
+                  fill={isDark ? "#1e293b" : "#e2e8f0"}
                   tickFormatter={() => ""}
                 />
               </LineChart>
@@ -950,7 +988,7 @@ export const PerformanceCharts: React.FC<ChartsProps> = ({
               .map((p, idx) => (
                 <div
                   key={`mem_split_${p.pid}`}
-                  className="h-[150px] border-b border-slate-800/50 pb-2"
+                  className="h-[150px] border-b border-slate-200 pb-2 dark:border-slate-800/50"
                 >
                   <div className="text-xs text-slate-500 mb-1 flex justify-between">
                     <span>
@@ -964,10 +1002,11 @@ export const PerformanceCharts: React.FC<ChartsProps> = ({
                   </div>
                   <ResponsiveContainer width="100%" height="100%">
                     <LineChart data={data}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                      <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
                       <XAxis dataKey="timestamp" hide />
                       <YAxis
-                        stroke="#475569"
+                        stroke={axisStroke}
+                        tick={{ fill: tickFill }}
                         fontSize={10}
                         width={30}
                         tickFormatter={(val) => (val / 1024 / 1024).toFixed(0)}
@@ -1011,12 +1050,12 @@ export const PerformanceCharts: React.FC<ChartsProps> = ({
       {/* Chart 3: JS Heap (Browser Mode Only) */}
       {mode === "browser" && (
         <div
-          className={`bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-xl ${
+          className={`bg-white border border-slate-200 rounded-xl p-5 shadow-xl dark:bg-slate-900 dark:border-slate-800 ${
             viewMode === "split" ? "h-auto" : "h-[300px]"
           }`}
         >
           <div className="flex justify-between items-center mb-4">
-            <h3 className="text-slate-400 font-medium flex items-center gap-2">
+            <h3 className="text-slate-700 font-medium flex items-center gap-2 dark:text-slate-400">
               <Database className="w-4 h-4" /> JS Heap Size (Browser API)
             </h3>
           </div>
@@ -1025,26 +1064,28 @@ export const PerformanceCharts: React.FC<ChartsProps> = ({
             <div className="w-full h-[220px]">
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={data}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                  <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
                   <XAxis
                     dataKey="timestamp"
                     tickFormatter={(time) =>
                       new Date(time).toLocaleTimeString()
                     }
                     minTickGap={50}
-                    stroke="#475569"
+                    stroke={axisStroke}
+                    tick={{ fill: tickFill }}
                     fontSize={10}
                   />
                   <YAxis
-                    stroke="#475569"
+                    stroke={axisStroke}
+                    tick={{ fill: tickFill }}
                     fontSize={12}
                     tickFormatter={(val) => formatBytes(val)}
                   />
                   <Tooltip
                     contentStyle={{
-                      backgroundColor: "#0f172a",
-                      borderColor: "#334155",
-                      color: "#f1f5f9",
+                      backgroundColor: isDark ? "#0f172a" : "#ffffff",
+                      borderColor: isDark ? "#334155" : "#e2e8f0",
+                      color: isDark ? "#f1f5f9" : "#0f172a",
                     }}
                     labelFormatter={(label) =>
                       new Date(label).toLocaleTimeString()
@@ -1062,13 +1103,16 @@ export const PerformanceCharts: React.FC<ChartsProps> = ({
                         }
                       }
                     }}
-                    wrapperStyle={{ cursor: "pointer" }}
+                    wrapperStyle={{
+                      cursor: "pointer",
+                      color: isDark ? "#cbd5e1" : "#334155",
+                    }}
                   />
                   {selectedProcesses.map((p, idx) => (
                     <Line
                       key={`heap_${p.pid}`}
                       hide={hiddenPids.has(p.pid)}
-                      name={`${p.title || p.name} (${p.pid})`}
+                      name={displayProcessLabel(p)}
                       type="monotone"
                       dataKey={`heap_${p.pid}`}
                       stroke={getColor(idx)}
@@ -1081,7 +1125,7 @@ export const PerformanceCharts: React.FC<ChartsProps> = ({
                     dataKey="timestamp"
                     height={30}
                     stroke="#4f46e5"
-                    fill="#1e293b"
+                    fill={isDark ? "#1e293b" : "#e2e8f0"}
                     tickFormatter={() => ""}
                   />
                 </LineChart>
@@ -1094,26 +1138,31 @@ export const PerformanceCharts: React.FC<ChartsProps> = ({
                 .map((p, idx) => (
                   <div
                     key={`heap_split_${p.pid}`}
-                    className="h-[150px] border-b border-slate-800/50 pb-2"
+                    className="h-[150px] border-b border-slate-200 pb-2 dark:border-slate-800/50"
                   >
                     <div className="text-xs text-slate-500 mb-1 flex justify-between">
                       <span>
-                        {p.title || p.name} ({p.pid})
+                        {displayProcessLabel(p)}
                       </span>
                       <span style={{ color: getColor(idx) }}>JS Heap</span>
                     </div>
                     <ResponsiveContainer width="100%" height="100%">
                       <LineChart data={data}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                        <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
                         <XAxis dataKey="timestamp" hide />
                         <YAxis
-                          stroke="#475569"
+                          stroke={axisStroke}
+                          tick={{ fill: tickFill }}
                           fontSize={10}
                           width={40}
                           tickFormatter={(val) => formatBytes(val)}
                         />
                         <Tooltip
-                          contentStyle={{ backgroundColor: "#0f172a" }}
+                          contentStyle={{
+                            backgroundColor: isDark ? "#0f172a" : "#ffffff",
+                            borderColor: isDark ? "#334155" : "#e2e8f0",
+                            color: isDark ? "#f1f5f9" : "#0f172a",
+                          }}
                           formatter={(val: number) => [formatBytes(val)]}
                           labelFormatter={() => ""}
                         />

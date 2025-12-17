@@ -7,8 +7,8 @@
   font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
   line-height: 1.5;
   font-weight: 400;
+  /* Theme is controlled by `html.dark` (Tailwind) + ThemeProvider. */
   color-scheme: light dark;
-  background-color: #0f172a; 
 }
 
 /* Custom Scrollbar */
@@ -16,12 +16,22 @@
   width: 6px;
 }
 .custom-scrollbar::-webkit-scrollbar-track {
-  background: #1e293b; 
+  background: #e2e8f0; /* slate-200 (light) */
 }
 .custom-scrollbar::-webkit-scrollbar-thumb {
-  background: #475569; 
+  background: #94a3b8; /* slate-400 (light) */
   border-radius: 3px;
 }
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: #64748b; 
+  background: #64748b; /* slate-500 */
+}
+
+html.dark .custom-scrollbar::-webkit-scrollbar-track {
+  background: #1e293b; /* slate-800 */
+}
+html.dark .custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #475569; /* slate-600 */
+}
+html.dark .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #64748b; /* slate-500 */
 }

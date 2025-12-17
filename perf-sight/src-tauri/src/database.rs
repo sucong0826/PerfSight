@@ -15,6 +15,14 @@ pub struct ReportSummary {
     pub created_at: String,
     pub title: String,
     pub duration_seconds: u64,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TagStat {
+    pub tag: String,
+    pub count: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -28,6 +36,62 @@ pub struct ReportDetail {
 }
 
 impl Database {
+    fn extract_tags_from_meta(meta: &Value) -> Vec<String> {
+        // We support multiple historical shapes for backward compatibility:
+        // - meta.test_context.tags (current)
+        // - meta.collection.test_context.tags (older UI checks this)
+        // - tags as an array OR as a comma-separated string
+        fn read_tags(v: &Value) -> Vec<String> {
+            let mut out: Vec<String> = Vec::new();
+            match v {
+                Value::Array(arr) => {
+                    for t in arr {
+                        if let Some(s) = t.as_str() {
+                            out.push(s.to_string());
+                        }
+                    }
+                }
+                Value::String(s) => {
+                    out.extend(
+                        s.split(',')
+                            .map(|x| x.trim())
+                            .filter(|x| !x.is_empty())
+                            .map(|x| x.to_string()),
+                    );
+                }
+                _ => {}
+            }
+            out
+        }
+
+        let mut raw: Vec<String> = Vec::new();
+        if let Some(v) = meta.get("test_context").and_then(|t| t.get("tags")) {
+            raw.extend(read_tags(v));
+        }
+        if let Some(v) = meta
+            .get("collection")
+            .and_then(|c| c.get("test_context"))
+            .and_then(|t| t.get("tags"))
+        {
+            raw.extend(read_tags(v));
+        }
+
+        // Normalize + dedupe (case-insensitive), keep first-seen casing.
+        let mut seen = std::collections::HashSet::<String>::new();
+        let mut out: Vec<String> = Vec::new();
+        for t in raw {
+            let trimmed = t.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let key = trimmed.to_lowercase();
+            if seen.insert(key) {
+                out.push(trimmed.to_string());
+            }
+        }
+        out
+    }
+
     pub fn new(path: &str) -> Result<Self> {
         let conn = Connection::open(path)?;
         
@@ -115,12 +179,14 @@ impl Database {
                 .and_then(|s| s.as_str())
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty());
+            let tags = Self::extract_tags_from_meta(&meta);
             let title_db: String = row.get(2)?;
             Ok(ReportSummary {
                 id: row.get(0)?,
                 created_at: row.get(1)?,
                 title: title_from_meta.unwrap_or(title_db),
                 duration_seconds,
+                tags,
             })
         })?;
 
@@ -129,6 +195,38 @@ impl Database {
             reports.push(report?);
         }
         Ok(reports)
+    }
+
+    /// Return distinct tag strings seen in existing reports, with frequency counts.
+    pub fn get_known_tags(&self) -> Result<Vec<TagStat>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT meta_json FROM reports")?;
+
+        let mut counts: std::collections::HashMap<String, (String, u64)> = std::collections::HashMap::new();
+        let iter = stmt.query_map([], |row| {
+            let meta_str: String = row.get(0).unwrap_or_else(|_| "{}".to_string());
+            Ok(meta_str)
+        })?;
+
+        for r in iter {
+            let meta_str = r?;
+            let meta: Value = serde_json::from_str(&meta_str).unwrap_or_else(|_| serde_json::json!({}));
+            for tag in Self::extract_tags_from_meta(&meta) {
+                let key = tag.trim().to_lowercase();
+                if key.is_empty() {
+                    continue;
+                }
+                let entry = counts.entry(key).or_insert_with(|| (tag.clone(), 0));
+                entry.1 += 1;
+            }
+        }
+
+        let mut out: Vec<TagStat> = counts
+            .into_iter()
+            .map(|(_, (tag, count))| TagStat { tag, count })
+            .collect();
+        out.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.tag.to_lowercase().cmp(&b.tag.to_lowercase())));
+        Ok(out)
     }
     
     pub fn get_report_detail(&self, id: i64) -> Result<ReportDetail> {
@@ -175,6 +273,14 @@ impl Database {
         let sql = format!("DELETE FROM reports WHERE id IN ({})", placeholders);
         let mut stmt = conn.prepare(&sql)?;
         stmt.execute(rusqlite::params_from_iter(ids.iter()))
+    }
+
+    pub fn update_report_title(&self, id: i64, title: &str) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE reports SET title = ?1 WHERE id = ?2",
+            params![title, id],
+        )
     }
 }
 
