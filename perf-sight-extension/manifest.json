@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Chrome Process Monitor POC",
-  "version": "1.0",
-  "description": "Logs Chrome internal process metrics to the console.",
+  "name": "PerfSight Extension",
+  "version": "1.1",
+  "description": "PerfSight Collector: Process Metrics & Console Logs",
   "permissions": [
     "processes"
   ],
@@ -11,6 +11,18 @@
   ],
   "background": {
     "service_worker": "background.js"
-  }
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["inject.js"],
+      "matches": ["<all_urls>"]
+    }
+  ]
 }
-

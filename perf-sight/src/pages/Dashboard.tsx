@@ -4,6 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { Activity } from 'lucide-react';
 import { PerformanceCharts, ProcessInfo } from '../components/Charts';
 import { ProcessList } from '../components/ProcessList';
+import { LogMetricSettings, LogMetricConfig } from '../components/LogMetricSettings';
 
 // Types
 interface MetricPoint {
@@ -17,6 +18,7 @@ interface MetricPoint {
   js_heap_size?: number;
   gpu_usage?: number;
   memory_private?: number;
+  custom_metrics?: Record<string, number>;
 }
 
 interface BatchMetric {
@@ -74,7 +76,8 @@ const genBuildId = () => {
 };
 
 export const Dashboard: React.FC = () => {
-  const [mode, setMode] = useState<"system" | "browser">("system");
+  // Default to Browser API (Chrome Task Manager metrics).
+  const [mode, setMode] = useState<"system" | "browser">("browser");
   const [processes, setProcesses] = useState<ProcessInfo[]>([]);
   // In Browser API mode, we default to Chrome Task Manager-aligned metrics.
   // If Chrome-aligned fields are missing for a PID, charts automatically fall back to OS metrics.
@@ -97,6 +100,23 @@ export const Dashboard: React.FC = () => {
   const [notes, setNotes] = useState("");
   const [durationMinutesText, setDurationMinutesText] = useState("");
   const [durationHint, setDurationHint] = useState<string | null>(null);
+
+  // Persistent Log Metric Configs
+  const [logConfigs, setLogConfigs] = useState<LogMetricConfig[]>(() => {
+    try {
+      const saved = localStorage.getItem('perfsight_log_configs');
+      return saved ? JSON.parse(saved) : [
+        // Default example
+        { name: "Inference Time", pattern: "(?i)inference.*?:\s*(\d+(\.\d+)?)", unit: "ms" }
+      ];
+    } catch {
+      return [];
+    }
+  });
+
+  useEffect(() => {
+    localStorage.setItem('perfsight_log_configs', JSON.stringify(logConfigs));
+  }, [logConfigs]);
 
   const maxDataPoints = 3600;
   const mockTimerRef = useRef<any>(null);
@@ -321,6 +341,8 @@ export const Dashboard: React.FC = () => {
           test_context: testContext,
           process_aliases,
           stop_after_seconds: stopAfterSeconds,
+          // Only relevant in Browser API mode (logs come from extension).
+          log_metric_configs: mode === "browser" ? logConfigs : undefined,
         },
       });
       setIsMocking(false);
@@ -366,6 +388,10 @@ export const Dashboard: React.FC = () => {
   };
 
   const addBatchMetric = (batch: BatchMetric) => {
+    // Debug: Check if custom metrics are arriving
+    // const hasCustom = Object.values(batch.metrics).some(m => m.custom_metrics);
+    // if (hasCustom) console.log("Received Batch with Custom Metrics:", batch);
+
     setChartData((prev) => {
       const point: any = { timestamp: batch.timestamp };
       Object.entries(batch.metrics).forEach(([pidStr, metric]) => {
@@ -382,6 +408,12 @@ export const Dashboard: React.FC = () => {
           point[`pmem_${pidStr}`] = metric.memory_private;
         if (metric.js_heap_size) point[`heap_${pidStr}`] = metric.js_heap_size;
         if (metric.gpu_usage) point[`gpu_${pidStr}`] = metric.gpu_usage;
+        if (metric.custom_metrics) {
+          Object.entries(metric.custom_metrics).forEach(([key, val]) => {
+            const safeKey = key.replace(/[^a-zA-Z0-9]/g, '_');
+            point[`custom_${safeKey}_${pidStr}`] = val;
+          });
+        }
       });
       // Merge same-timestamp batches (can happen when backend receives per-PID websocket frames).
       const last = prev.length ? prev[prev.length - 1] : null;
@@ -628,6 +660,19 @@ export const Dashboard: React.FC = () => {
               </div>
             </div>
           </div>
+
+          {mode === "browser" && (
+            <div className="mb-4">
+              <LogMetricSettings
+                configs={logConfigs}
+                onChange={setLogConfigs}
+                disabled={isCollecting}
+                defaultOpen={false}
+                showOptionalBadge
+              />
+            </div>
+          )}
+
           <PerformanceCharts
             data={chartData}
             selectedProcesses={selectedProcessList}

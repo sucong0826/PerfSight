@@ -13,6 +13,7 @@ import {
   Pencil,
   X,
   Save,
+  Activity,
 } from "lucide-react";
 import { PerformanceCharts, ProcessInfo } from "../components/Charts";
 import jsPDF from "jspdf";
@@ -275,6 +276,12 @@ export const ReportDetail: React.FC = () => {
             point[`pmem_${pid}`] = metric.memory_private;
           if (metric.js_heap_size) point[`heap_${pid}`] = metric.js_heap_size;
           if (metric.gpu_usage) point[`gpu_${pid}`] = metric.gpu_usage;
+          if (metric.custom_metrics) {
+            Object.entries(metric.custom_metrics).forEach(([key, val]) => {
+              const safeKey = key.replace(/[^a-zA-Z0-9]/g, '_');
+              point[`custom_${safeKey}_${pid}`] = val;
+            });
+          }
         }
       );
       if (!(last && last.timestamp === batch.timestamp)) {
@@ -437,6 +444,57 @@ export const ReportDetail: React.FC = () => {
 
     out.sort((a, b) => (b.avg_cpu ?? 0) - (a.avg_cpu ?? 0));
     return out;
+  }, [report]);
+
+  const customMetricSummaries = React.useMemo(() => {
+    if (!report?.metrics?.length) return [];
+    
+    // Map<MetricName, Map<PID, number[]>>
+    const dataMap = new Map<string, Map<number, number[]>>();
+
+    report.metrics.forEach(batch => {
+        Object.entries(batch.metrics).forEach(([pidStr, metric]: [string, any]) => {
+            const pid = parseInt(pidStr, 10);
+            if (metric.custom_metrics) {
+                Object.entries(metric.custom_metrics).forEach(([key, val]) => {
+                    const name = key; 
+                    const v = val as number;
+                    if (typeof v === 'number') {
+                        if (!dataMap.has(name)) dataMap.set(name, new Map());
+                        const byPid = dataMap.get(name)!;
+                        if (!byPid.has(pid)) byPid.set(pid, []);
+                        byPid.get(pid)!.push(v);
+                    }
+                });
+            }
+        });
+    });
+    
+    // Compute stats
+    const results: Array<{
+        name: string;
+        rows: Array<{
+            pid: number;
+            min: number;
+            max: number;
+            avg: number;
+            count: number;
+        }>
+    }> = [];
+
+    for (const [name, pidMap] of dataMap) {
+        const rows = [];
+        for (const [pid, values] of pidMap) {
+            if (!values.length) continue;
+            const min = Math.min(...values);
+            const max = Math.max(...values);
+            const sum = values.reduce((a, b) => a + b, 0);
+            const avg = sum / values.length;
+            rows.push({ pid, min, max, avg, count: values.length });
+        }
+        results.push({ name, rows });
+    }
+    return results;
   }, [report]);
 
   if (!report) {
@@ -1453,6 +1511,49 @@ export const ReportDetail: React.FC = () => {
               </div>
             </div>
           )}
+  
+        {customMetricSummaries.length > 0 && (
+            <div className="mb-6 bg-white border border-slate-200 rounded-xl p-5 dark:bg-slate-900 dark:border-slate-800">
+            <div className="text-sm text-slate-500 uppercase font-bold mb-3">
+                Log Extracted Metrics
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                {customMetricSummaries.map(m => (
+                    <div key={m.name} className="bg-slate-50 border border-slate-200 rounded-lg p-4 dark:bg-slate-950/50 dark:border-slate-800">
+                        <div className="font-medium mb-3 flex items-center gap-2">
+                            <Activity className="w-4 h-4 text-indigo-500"/> {m.name}
+                        </div>
+                        <table className="w-full text-xs">
+                            <thead>
+                                <tr className="text-slate-500 border-b border-slate-200 dark:border-slate-800">
+                                    <th className="text-left py-1 pr-2">PID</th>
+                                    <th className="text-right py-1 px-2">Avg</th>
+                                    <th className="text-right py-1 px-2">Min</th>
+                                    <th className="text-right py-1 pl-2">Max</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {m.rows.map(r => (
+                                    <tr key={r.pid} className="border-b border-slate-200 last:border-0 dark:border-slate-800/50">
+                                        <td className="py-1.5 pr-2 tabular-nums">
+                                            {r.pid === 0 ? "App Logs" : (
+                                              <span title={`PID ${r.pid}`}>
+                                                {snapshotByPid.get(r.pid)?.alias || r.pid}
+                                              </span>
+                                            )}
+                                        </td>
+                                        <td className="py-1.5 px-2 text-right tabular-nums font-medium">{r.avg.toFixed(2)}</td>
+                                        <td className="py-1.5 px-2 text-right tabular-nums text-slate-500">{r.min.toFixed(2)}</td>
+                                        <td className="py-1.5 pl-2 text-right tabular-nums text-slate-500">{r.max.toFixed(2)}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                ))}
+            </div>
+            </div>
+        )}
 
         {snapshotArr.length > 0 && (
           <div className="mb-6 bg-white border border-slate-200 rounded-xl p-5 dark:bg-slate-900 dark:border-slate-800">

@@ -330,6 +330,7 @@ impl ResourceCollector for GeneralCollector {
             gpu_usage: None,
             js_heap_size: None,
             memory_private: None,
+            custom_metrics: None,
         };
 
         // 1. Get Sysinfo Metrics (if PID is likely real)

@@ -12,7 +12,7 @@ import {
   ReferenceArea,
   ReferenceLine,
 } from "recharts";
-import { LayoutGrid, Rows, Cpu, Database } from "lucide-react";
+import { LayoutGrid, Rows, Cpu, Database, Activity } from "lucide-react";
 import { useTheme } from "../theme";
 
 export interface ProcessInfo {
@@ -235,6 +235,41 @@ export const PerformanceCharts: React.FC<ChartsProps> = ({
     : undefined;
   const preferChromeCpu = mode === "browser" && metricStandard === "chrome";
   const preferChromeMem = mode === "browser" && metricStandard === "chrome";
+
+  // Identify PIDs that are "Log Only" (have custom metrics but 0 or missing CPU/Memory).
+  // We don't want to clutter the main CPU/Memory charts with flat lines for these.
+  const logOnlyPids = useMemo(() => {
+    const candidates = new Set<number>();
+    const hasSystemData = new Set<number>();
+
+    // First, gather all PIDs that have ANY data
+    data.forEach(d => {
+        Object.keys(d).forEach(k => {
+            const parts = k.split('_');
+            const pidStr = parts[parts.length - 1];
+            const pid = parseInt(pidStr, 10);
+            if (!isNaN(pid)) {
+                if (k.startsWith('custom_')) {
+                    candidates.add(pid);
+                } else if ((k.startsWith('cpu') || k.startsWith('rss') || k.startsWith('pmem') || k.startsWith('foot'))) {
+                     const v = d[k];
+                     if (typeof v === 'number' && v > 0) {
+                         hasSystemData.add(pid);
+                     }
+                }
+            }
+        });
+    });
+    
+    // PIDs that have custom metrics but NO significant system data
+    const logOnly = new Set<number>();
+    candidates.forEach(pid => {
+        if (!hasSystemData.has(pid)) {
+            logOnly.add(pid);
+        }
+    });
+    return logOnly;
+  }, [data]);
 
   // CPU chart annotations (combined view): highlight sustained high total CPU and mark change points.
   const cpuAnnotations = useMemo(() => {
@@ -551,7 +586,9 @@ export const PerformanceCharts: React.FC<ChartsProps> = ({
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-            {selectedProcesses.map((p, idx) => {
+            {selectedProcesses
+                .filter(p => !logOnlyPids.has(p.pid))
+                .map((p, idx) => {
               const cpuChrome = getLatestMetric(p.pid, "cpuch");
               // Backward compatibility: some report payloads only have legacy `cpu_${pid}`.
               const cpuOs =
@@ -770,6 +807,7 @@ export const PerformanceCharts: React.FC<ChartsProps> = ({
                       />
                     ))}
                 {selectedProcesses.map((p, idx) => {
+                  if (logOnlyPids.has(p.pid)) return null;
                   const keyPrefix = chooseBestPrefix(
                     p.pid,
                     preferChromeCpu
@@ -808,7 +846,7 @@ export const PerformanceCharts: React.FC<ChartsProps> = ({
         ) : (
           <div className="space-y-4">
             {selectedProcesses
-              .filter((p) => !hiddenPids.has(p.pid))
+              .filter((p) => !hiddenPids.has(p.pid) && !logOnlyPids.has(p.pid))
               .map((p, idx) => (
                 <div
                   key={`cpu_split_${p.pid}`}
@@ -942,6 +980,7 @@ export const PerformanceCharts: React.FC<ChartsProps> = ({
                       />
                     ))}
                 {selectedProcesses.map((p, idx) => {
+                  if (logOnlyPids.has(p.pid)) return null;
                   const keyPrefix = chooseBestPrefix(
                     p.pid,
                     preferChromeMem ? ["pmem", "foot", "rss"] : ["foot", "rss"]
@@ -984,7 +1023,7 @@ export const PerformanceCharts: React.FC<ChartsProps> = ({
         ) : (
           <div className="space-y-4">
             {selectedProcesses
-              .filter((p) => !hiddenPids.has(p.pid))
+              .filter((p) => !hiddenPids.has(p.pid) && !logOnlyPids.has(p.pid))
               .map((p, idx) => (
                 <div
                   key={`mem_split_${p.pid}`}
@@ -1182,6 +1221,119 @@ export const PerformanceCharts: React.FC<ChartsProps> = ({
           )}
         </div>
       )}
+
+      {/* Chart 4+: Custom Metrics (Dynamically discovered) */}
+      {(() => {
+        // Map<Prefix, Set<PID>>. Prefix includes "custom_..." but excludes "_PID"
+        const customMetricsMap = new Map<string, Set<number>>();
+        data.forEach((d) => {
+          Object.keys(d).forEach((k) => {
+            if (k.startsWith("custom_")) {
+              const lastUnderscore = k.lastIndexOf("_");
+              if (lastUnderscore === -1) return;
+              
+              const pidStr = k.substring(lastUnderscore + 1);
+              const pid = parseInt(pidStr, 10);
+              if (isNaN(pid)) return;
+              
+              const prefix = k.substring(0, lastUnderscore);
+              if (!customMetricsMap.has(prefix)) customMetricsMap.set(prefix, new Set());
+              customMetricsMap.get(prefix)?.add(pid);
+            }
+          });
+        });
+
+        return Array.from(customMetricsMap.entries()).map(([prefix, pids]) => {
+          const displayName = prefix.replace(/^custom_/, "").replace(/_/g, " ");
+          return (
+          <div
+            key={prefix}
+            className={`bg-white border border-slate-200 rounded-xl p-5 shadow-xl dark:bg-slate-900 dark:border-slate-800 ${
+              viewMode === "split" ? "h-auto" : "h-[300px]"
+            }`}
+          >
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-slate-700 font-medium flex items-center gap-2 dark:text-slate-400">
+                <Activity className="w-4 h-4" /> {displayName}
+              </h3>
+            </div>
+
+            <div className="w-full h-[220px]">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={data}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
+                  <XAxis
+                    dataKey="timestamp"
+                    tickFormatter={(time) => new Date(time).toLocaleTimeString()}
+                    minTickGap={50}
+                    stroke={axisStroke}
+                    tick={{ fill: tickFill }}
+                    fontSize={10}
+                  />
+                  <YAxis
+                    stroke={axisStroke}
+                    tick={{ fill: tickFill }}
+                    fontSize={12}
+                  />
+                  <Tooltip
+                    contentStyle={{
+                      backgroundColor: isDark ? "#0f172a" : "#ffffff",
+                      borderColor: isDark ? "#334155" : "#e2e8f0",
+                      color: isDark ? "#f1f5f9" : "#0f172a",
+                    }}
+                    labelFormatter={(label) => new Date(label).toLocaleTimeString()}
+                  />
+                  <Legend />
+                  {Array.from(pids).map((pid, idx) => {
+                    // Find process info for label/color, or fallback for PID 0 (App Logs) or unselected PIDs.
+                    const p = selectedProcesses.find((proc) => proc.pid === pid);
+                    
+                    // If this is a "Log Only" PID (not in selected list or no system data), make sure we still show it here!
+                    // But if user explicitly HID it via legend, respect that.
+                    
+                    const label = p
+                      ? displayProcessLabel(p)
+                      : pid === 0
+                      ? "App Logs"
+                      : `PID ${pid}`;
+                    
+                    // Use consistent color from selection if available, else derive from PID
+                    const color = p
+                      ? getColor(selectedProcesses.indexOf(p))
+                      : getColor(pid); 
+
+                    if (hiddenPids.has(pid)) return null;
+
+                    const dataKey = `${prefix}_${pid}`;
+
+                    return (
+                      <Line
+                        key={dataKey}
+                        name={label}
+                        type="monotone"
+                        dataKey={dataKey}
+                        stroke={color}
+                        strokeWidth={2}
+                        connectNulls
+                        dot={{ r: 3 }}
+                        isAnimationActive={false}
+                      />
+                    );
+                  })}
+                  <Brush
+                    dataKey="timestamp"
+                    height={30}
+                    stroke="#8b5cf6"
+                    fill={isDark ? "#1e293b" : "#e2e8f0"}
+                    tickFormatter={() => ""}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        );
+      });
+      })()}
     </div>
   );
 };

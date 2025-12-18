@@ -38,6 +38,8 @@ pub struct MetricPoint {
     // Browser Task Manager-aligned metric (when available via CDP SystemInfo.getProcessInfo)
     // Typically reported as "Memory footprint" / private memory.
     pub memory_private: Option<u64>,
+    // Dynamic metrics extracted from Console Logs or Custom Events (e.g. "Inference Time", "FPS")
+    pub custom_metrics: Option<HashMap<String, f64>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,6 +57,15 @@ pub struct CollectionConfig {
     pub process_aliases: Option<Vec<ProcessAlias>>,
     /// Optional: auto-stop after N seconds and generate report.
     pub stop_after_seconds: Option<u64>,
+    pub log_metric_configs: Option<Vec<LogMetricConfig>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogMetricConfig {
+    pub name: String,
+    pub pattern: String,
+    pub unit: Option<String>,
+    pub target_pid: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

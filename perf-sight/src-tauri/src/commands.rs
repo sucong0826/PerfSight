@@ -4,16 +4,18 @@ use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 use tauri_plugin_shell::ShellExt;
 use tauri_plugin_shell::process::{CommandEvent, CommandChild};
-use crate::models::{CollectionConfig, ProcessInfo, BatchMetric, MetricPoint, ProcessAlias};
+use crate::models::{CollectionConfig, ProcessInfo, BatchMetric, MetricPoint, ProcessAlias, LogMetricConfig};
 use crate::collector::create_collector;
 use crate::database::{Database, ReportSummary, ReportDetail, TagStat};
-use chrono::{Utc, TimeZone};
+use chrono::{DateTime, Utc, TimeZone};
 use serde_json::json;
 use serde_json::Value;
+#[cfg(target_os = "macos")]
 use std::time::Duration;
 use base64::Engine;
 use tauri::path::BaseDirectory;
 use serde::{Deserialize, Serialize};
+use regex::Regex;
 
 #[derive(Clone)]
 pub struct CollectionState {
@@ -30,6 +32,8 @@ pub struct CollectionState {
     pub app_version: Arc<Mutex<String>>,
     pub test_context: Arc<Mutex<Option<Value>>>,
     pub stop_after_seconds: Arc<Mutex<Option<u64>>>,
+    // Store compiled regexes for log metrics: (Config, Regex)
+    pub log_metrics: Arc<Mutex<Vec<(LogMetricConfig, Regex)>>>,
 }
 
 impl CollectionState {
@@ -47,6 +51,7 @@ impl CollectionState {
             app_version: Arc::new(Mutex::new("unknown".to_string())),
             test_context: Arc::new(Mutex::new(None)),
             stop_after_seconds: Arc::new(Mutex::new(None)),
+            log_metrics: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }
@@ -198,17 +203,52 @@ pub fn import_report_dataset(
     Ok(new_id)
 }
 
+// Helper to push a custom metric derived from logs
+pub fn push_custom_metric(
+    app: &AppHandle,
+    state: &CollectionState,
+    pid: u32,
+    timestamp: DateTime<Utc>,
+    name: String,
+    value: f64
+) {
+    // Emit for live preview regardless of run state
+    
+    let mut custom = HashMap::new();
+    custom.insert(name, value);
+    
+    let point = MetricPoint {
+        timestamp,
+        pid,
+        cpu_usage: 0.0,
+        cpu_os_usage: 0.0,
+        cpu_chrome_usage: None,
+        memory_rss: 0,
+        memory_footprint: None,
+        gpu_usage: None,
+        js_heap_size: None,
+        memory_private: None,
+        custom_metrics: Some(custom),
+    };
+    
+    let mut metrics = HashMap::new();
+    metrics.insert(pid, point);
+    let batch = BatchMetric { timestamp, metrics };
+    
+    let _ = app.emit("new-metric-batch", &batch);
+    
+    // Only save if running
+    if *safe_lock(&state.is_running) {
+        safe_lock(&state.buffer).push(batch);
+    }
+}
+
 // Helper to process metric payload from Sidecar or WebSocket
 pub fn process_metric_payload(
     app: &AppHandle,
     data: Value,
     state: &CollectionState
 ) {
-    // Only process data if collection is running
-    if !*safe_lock(&state.is_running) {
-        return;
-    }
-
     if data["type"] == "data" {
         let ts_ms = data["timestamp"].as_i64().unwrap_or(0);
         let timestamp = Utc.timestamp_millis_opt(ts_ms).unwrap();
@@ -329,30 +369,34 @@ pub fn process_metric_payload(
                         gpu_usage: None,
                         js_heap_size: None,
                         memory_private: Some(mem_bytes.max(0.0) as u64),
+                        custom_metrics: None,
                     });
                 }
             }
         }
         
         if !metrics.is_empty() {
-            // Some sources (notably the Chrome extension websocket) may send multiple messages
-            // with the *same timestamp*, each containing only a subset of PIDs.
-            // Merge them to keep per-PID series continuous and reports complete.
-            let mut buffer = safe_lock(&state.buffer);
-            if let Some(last) = buffer.last_mut() {
-                if last.timestamp == timestamp {
-                    for (pid, mp) in metrics {
-                        last.metrics.insert(pid, mp);
-                    }
-                    let merged = last.clone();
-                    drop(buffer);
-                    let _ = app.emit("new-metric-batch", &merged);
-                    return;
-                }
-            }
+            let is_running = *safe_lock(&state.is_running);
             let batch = BatchMetric { timestamp, metrics };
-            buffer.push(batch.clone());
-            drop(buffer);
+
+            if is_running {
+                // Merge logic for recording
+                let mut buffer = safe_lock(&state.buffer);
+                if let Some(last) = buffer.last_mut() {
+                    if last.timestamp == timestamp {
+                        for (pid, mp) in batch.metrics.clone() {
+                            last.metrics.insert(pid, mp);
+                        }
+                        let merged = last.clone();
+                        drop(buffer);
+                        let _ = app.emit("new-metric-batch", &merged);
+                        return;
+                    }
+                }
+                buffer.push(batch.clone());
+            }
+            
+            // Emit for live preview (if not merged above)
             let _ = app.emit("new-metric-batch", &batch);
         }
     }
@@ -434,6 +478,20 @@ pub async fn start_collection(
         .map(|tc| serde_json::to_value(tc).unwrap_or_else(|_| json!({})));
     *safe_lock(&state.process_aliases) = config.process_aliases.clone().unwrap_or_default();
     *safe_lock(&state.stop_after_seconds) = config.stop_after_seconds;
+
+    // Compile regexes for log metrics
+    if let Some(configs) = config.log_metric_configs {
+        let mut compiled = Vec::new();
+        for cfg in configs {
+            match Regex::new(&cfg.pattern) {
+                Ok(re) => compiled.push((cfg, re)),
+                Err(e) => eprintln!("Invalid regex pattern '{}': {}", cfg.pattern, e),
+            }
+        }
+        *safe_lock(&state.log_metrics) = compiled;
+    } else {
+        safe_lock(&state.log_metrics).clear();
+    }
 
     // Capture a process snapshot for the selected PIDs (best effort).
     let snapshot = tokio::task::spawn_blocking({
@@ -682,6 +740,7 @@ pub async fn stop_collection(
         safe_lock(&state.process_snapshot).clear();
         safe_lock(&state.process_aliases).clear();
         *safe_lock(&state.test_context) = None;
+        safe_lock(&state.log_metrics).clear();
         return Ok("Stopped and Saved Report".to_string());
     }
     
@@ -694,6 +753,7 @@ pub async fn stop_collection(
     safe_lock(&state.process_snapshot).clear();
     safe_lock(&state.process_aliases).clear();
     *safe_lock(&state.test_context) = None;
+    safe_lock(&state.log_metrics).clear();
     Ok("Stopped (No Data)".to_string())
 }
 
@@ -774,6 +834,7 @@ pub fn debug_get_macos_rusage(pid: u32) -> Result<Value, String> {
     }
     #[cfg(not(target_os = "macos"))]
     {
+        let _ = pid;
         Err("debug_get_macos_rusage is only available on macOS".to_string())
     }
 }

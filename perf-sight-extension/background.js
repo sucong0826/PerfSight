@@ -45,6 +45,41 @@ function connectWebSocket() {
 // Start immediately
 connectWebSocket();
 
+// Listen for logs from content scripts
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    // Only forward if type matches what we expect from inject.js
+    if (message.type === 'console_log' || message.type === 'custom_metric') {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            
+            // Try to resolve Tab ID to OS Process ID
+            const tabId = sender.tab ? sender.tab.id : null;
+            if (tabId) {
+                chrome.processes.getProcessIdForTab(tabId, (processId) => {
+                    // processId is Chrome's internal ID
+                    chrome.processes.getProcessInfo([processId], false, (infos) => {
+                        const proc = infos[processId];
+                        const osPid = proc ? proc.osProcessId : 0;
+                        
+                        // Attach PID to payload
+                        message.pid = osPid;
+                        
+                        ws.send(JSON.stringify({
+                            type: message.type, 
+                            data: message 
+                        }));
+                    });
+                });
+            } else {
+                // No tab ID, send without PID
+                ws.send(JSON.stringify({
+                    type: message.type, 
+                    data: message 
+                }));
+            }
+        }
+    }
+});
+
 /**
  * 核心处理函数：接收进程数据并打印
  * 这个函数会被 onUpdatedWithMemory 事件反复调用
