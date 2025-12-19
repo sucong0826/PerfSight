@@ -651,4 +651,3 @@ impl Database {
         stmt.execute(rusqlite::params_from_iter(params))
     }
 }
-

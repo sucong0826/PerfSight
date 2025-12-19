@@ -53,4 +53,3 @@ echo "Starting PerfSight Dev..."
 cd "$ROOT_DIR/perf-sight"
 npm run tauri dev
 
-

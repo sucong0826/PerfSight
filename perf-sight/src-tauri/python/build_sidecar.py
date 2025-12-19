@@ -65,7 +65,7 @@ def main():
     out_name = f"collector-{target}"
     out_path = binaries_dir / out_name
     if out_path.exists():
-        print(f"[sidecar] already exists: {out_path}")
+        print(f"[sidecar] using existing binary: {out_path}")
         return
 
     venv_dir = here / ".venv"
