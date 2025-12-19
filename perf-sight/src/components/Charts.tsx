@@ -1284,7 +1284,7 @@ export const PerformanceCharts: React.FC<ChartsProps> = ({
                     labelFormatter={(label) => new Date(label).toLocaleTimeString()}
                   />
                   <Legend />
-                  {Array.from(pids).map((pid, idx) => {
+                  {Array.from(pids).map((pid) => {
                     // Find process info for label/color, or fallback for PID 0 (App Logs) or unselected PIDs.
                     const p = selectedProcesses.find((proc) => proc.pid === pid);
                     

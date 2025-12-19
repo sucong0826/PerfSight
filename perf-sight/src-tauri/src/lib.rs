@@ -50,9 +50,17 @@ pub fn run() {
             commands::delete_report,
             commands::delete_reports,
             commands::update_report_title,
+            commands::update_report_folder_path,
+            commands::update_reports_folder_path,
+            commands::list_folder_paths,
+            commands::create_folder,
+            commands::get_folder_stats,
+            commands::rename_folder,
+            commands::delete_folder,
             commands::debug_get_macos_rusage,
             commands::export_report_pdf,
             commands::export_report_dataset,
+            commands::export_reports_bundle_zip,
             commands::import_report_dataset
         ])
         .run(tauri::generate_context!())

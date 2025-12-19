@@ -88,6 +88,7 @@ export const Dashboard: React.FC = () => {
   const [processAliases, setProcessAliases] = useState<Record<number, string>>(
     {}
   );
+  const [folderPath, setFolderPath] = useState("");
 
   const [isCollecting, setIsCollecting] = useState(false);
   const [chartData, setChartData] = useState<any[]>([]);
@@ -149,6 +150,7 @@ export const Dashboard: React.FC = () => {
           mode: "system" | "browser";
           test_context?: TestContext | null;
           process_aliases?: ProcessAlias[] | null;
+          folder_path?: string | null;
           started_at?: string | null;
           stop_after_seconds?: number | null;
         };
@@ -174,6 +176,9 @@ export const Dashboard: React.FC = () => {
               map[pid] = alias;
             }
             setProcessAliases(map);
+          }
+          if (typeof status.folder_path === "string") {
+            setFolderPath(status.folder_path);
           }
 
           // Rehydrate auto-stop timer if configured.
@@ -338,6 +343,7 @@ export const Dashboard: React.FC = () => {
           target_pids: pids,
           interval_ms: 1000,
           mode: mode,
+          folder_path: folderPath.trim() || null,
           test_context: testContext,
           process_aliases,
           stop_after_seconds: stopAfterSeconds,
@@ -563,6 +569,19 @@ export const Dashboard: React.FC = () => {
               Test Context (saved into report metadata)
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div className="md:col-span-2">
+                <div className="text-xs text-slate-500 mb-1">Folder (optional)</div>
+                <input
+                  value={folderPath}
+                  onChange={(e) => setFolderPath(e.target.value)}
+                  disabled={isCollecting}
+                  className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 disabled:opacity-60 dark:bg-slate-950 dark:border-slate-800 dark:text-slate-200 dark:placeholder:text-slate-600"
+                  placeholder="e.g. Release_1.2.3/HomeFeedScroll"
+                />
+                <div className="mt-1 text-[11px] text-slate-500">
+                  Used by Reports folder tree. Format: <span className="font-mono">Release/Scenario</span>
+                </div>
+              </div>
               <div>
                 <div className="text-xs text-slate-500 mb-1">Scenario Name</div>
                 <input

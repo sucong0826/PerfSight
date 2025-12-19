@@ -18,6 +18,7 @@ import {
 import { PerformanceCharts, ProcessInfo } from "../components/Charts";
 import jsPDF from "jspdf";
 import html2canvas from "html2canvas";
+import { buildReportPdfDataUri } from "../utils/bulkExport";
 
 interface AnalysisReport {
   score: number;
@@ -278,7 +279,7 @@ export const ReportDetail: React.FC = () => {
           if (metric.gpu_usage) point[`gpu_${pid}`] = metric.gpu_usage;
           if (metric.custom_metrics) {
             Object.entries(metric.custom_metrics).forEach(([key, val]) => {
-              const safeKey = key.replace(/[^a-zA-Z0-9]/g, '_');
+              const safeKey = key.replace(/[^a-zA-Z0-9]/g, "_");
               point[`custom_${safeKey}_${pid}`] = val;
             });
           }
@@ -448,51 +449,53 @@ export const ReportDetail: React.FC = () => {
 
   const customMetricSummaries = React.useMemo(() => {
     if (!report?.metrics?.length) return [];
-    
+
     // Map<MetricName, Map<PID, number[]>>
     const dataMap = new Map<string, Map<number, number[]>>();
 
-    report.metrics.forEach(batch => {
-        Object.entries(batch.metrics).forEach(([pidStr, metric]: [string, any]) => {
-            const pid = parseInt(pidStr, 10);
-            if (metric.custom_metrics) {
-                Object.entries(metric.custom_metrics).forEach(([key, val]) => {
-                    const name = key; 
-                    const v = val as number;
-                    if (typeof v === 'number') {
-                        if (!dataMap.has(name)) dataMap.set(name, new Map());
-                        const byPid = dataMap.get(name)!;
-                        if (!byPid.has(pid)) byPid.set(pid, []);
-                        byPid.get(pid)!.push(v);
-                    }
-                });
-            }
-        });
+    report.metrics.forEach((batch) => {
+      Object.entries(batch.metrics).forEach(
+        ([pidStr, metric]: [string, any]) => {
+          const pid = parseInt(pidStr, 10);
+          if (metric.custom_metrics) {
+            Object.entries(metric.custom_metrics).forEach(([key, val]) => {
+              const name = key;
+              const v = val as number;
+              if (typeof v === "number") {
+                if (!dataMap.has(name)) dataMap.set(name, new Map());
+                const byPid = dataMap.get(name)!;
+                if (!byPid.has(pid)) byPid.set(pid, []);
+                byPid.get(pid)!.push(v);
+              }
+            });
+          }
+        }
+      );
     });
-    
+
     // Compute stats
     const results: Array<{
-        name: string;
-        rows: Array<{
-            pid: number;
-            min: number;
-            max: number;
-            avg: number;
-            count: number;
-        }>
+      name: string;
+      rows: Array<{
+        pid: number;
+        min: number;
+        max: number;
+        avg: number;
+        count: number;
+      }>;
     }> = [];
 
     for (const [name, pidMap] of dataMap) {
-        const rows = [];
-        for (const [pid, values] of pidMap) {
-            if (!values.length) continue;
-            const min = Math.min(...values);
-            const max = Math.max(...values);
-            const sum = values.reduce((a, b) => a + b, 0);
-            const avg = sum / values.length;
-            rows.push({ pid, min, max, avg, count: values.length });
-        }
-        results.push({ name, rows });
+      const rows = [];
+      for (const [pid, values] of pidMap) {
+        if (!values.length) continue;
+        const min = Math.min(...values);
+        const max = Math.max(...values);
+        const sum = values.reduce((a, b) => a + b, 0);
+        const avg = sum / values.length;
+        rows.push({ pid, min, max, avg, count: values.length });
+      }
+      results.push({ name, rows });
     }
     return results;
   }, [report]);
@@ -520,11 +523,36 @@ export const ReportDetail: React.FC = () => {
   };
 
   const handleExport = async () => {
-    const element = document.getElementById("report-content");
+    if (!report) return;
+    const report0 = report;
+
+    const element = document.getElementById(
+      "report-content"
+    ) as HTMLElement | null;
     if (!element) return;
 
     try {
       setIsExporting(true);
+      // Build a data-driven PDF (for bundling into ZIP) from report data.
+      const pdfDataUri = await buildReportPdfDataUri({
+        id: report0.id,
+        created_at: report0.created_at,
+        title: report0.title,
+        metrics: report0.metrics,
+        analysis: report0.analysis,
+        meta: report0.meta,
+      });
+
+      const zipPath = (await invoke("export_reports_bundle_zip", {
+        items: [{ report_id: report0.id, pdf_base64: pdfDataUri }],
+        filename: null,
+      })) as string;
+      alert(`Exported ZIP:\n${zipPath}`);
+      return;
+
+      // Legacy exporter code (kept for reference). Ensure we have a stable local `report` binding for type-checking.
+      const report = report0;
+
       // --- Page 1: Professional, text-based report ---
       const pdf = new jsPDF("p", "mm", "a4");
       const W = pdf.internal.pageSize.getWidth();
@@ -694,7 +722,7 @@ export const ReportDetail: React.FC = () => {
 
       addSectionTitle("Overall (avg only)");
       if (report.analysis?.summary) {
-        const s = report.analysis.summary as any;
+        const s = report.analysis?.summary as any;
         addKV("Avg CPU (total)", `${Number(s.avg_cpu).toFixed(1)}%`);
         addKV("Avg Memory (total)", `${Number(s.avg_mem_mb).toFixed(0)} MB`);
       } else {
@@ -703,7 +731,7 @@ export const ReportDetail: React.FC = () => {
 
       addSectionTitle("Insights");
       const insights: string[] = Array.isArray(report.analysis?.insights)
-        ? report.analysis!.insights
+        ? (report.analysis?.insights as any)
         : [];
       if (insights.length === 0) {
         addKV("Result", "No issues detected.");
@@ -736,7 +764,7 @@ export const ReportDetail: React.FC = () => {
       pdf.text("Appendix: Full Report Snapshot", marginX, y);
       y += 6;
 
-      const canvas = await html2canvas(element, {
+      const canvas = await html2canvas(element as HTMLElement, {
         scale: 2,
         backgroundColor: "#020617",
         logging: false,
@@ -753,8 +781,10 @@ export const ReportDetail: React.FC = () => {
         sliceCanvas.width = canvas.width;
         sliceCanvas.height = Math.min(sliceHeightPx, canvas.height - offsetY);
         const ctx = sliceCanvas.getContext("2d");
-        if (!ctx) break;
-        ctx.drawImage(
+        if (!ctx) {
+          break;
+        }
+        ctx!.drawImage(
           canvas,
           0,
           offsetY,
@@ -771,25 +801,10 @@ export const ReportDetail: React.FC = () => {
         if (offsetY + sliceHeightPx < canvas.height) pdf.addPage();
       }
 
-      const dataUri = pdf.output("datauristring");
-      try {
-        // In Tauri, browser-style downloads may be blocked. Always try native save first.
-        const savedPath = (await invoke("export_report_pdf", {
-          reportId: report.id,
-          filename: `PerfSight_Report_${report.id}.pdf`,
-          pdfBase64: dataUri,
-        })) as string;
-        alert(`PDF saved:\n${savedPath}`);
-      } catch (e) {
-        console.error(
-          "Native PDF save failed; falling back to browser download",
-          e
-        );
-        pdf.save(`PerfSight_Report_${report.id}.pdf`);
-      }
+      // Legacy single-PDF save path has been superseded by ZIP export above.
     } catch (err) {
       console.error("Export failed", err);
-      alert("Failed to export PDF");
+      alert("Failed to export ZIP");
     } finally {
       setIsExporting(false);
     }
@@ -893,23 +908,7 @@ export const ReportDetail: React.FC = () => {
             className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg font-medium transition-colors"
           >
             <Download className="w-4 h-4" />{" "}
-            {isExporting ? "Exporting…" : "Export PDF"}
-          </button>
-          <button
-            onClick={async () => {
-              try {
-                const saved = (await invoke("export_report_dataset", {
-                  reportId: report.id,
-                })) as string;
-                alert(`Dataset saved:\n${saved}`);
-              } catch (e) {
-                console.error("Export dataset failed", e);
-                alert("Failed to export dataset");
-              }
-            }}
-            className="flex items-center gap-2 bg-slate-900 hover:bg-slate-800 text-white px-4 py-2 rounded-lg font-medium transition-colors dark:bg-slate-800 dark:hover:bg-slate-700"
-          >
-            <Download className="w-4 h-4" /> Export Dataset
+            {isExporting ? "Exporting…" : "Export…"}
           </button>
         </div>
       </div>
@@ -1511,48 +1510,62 @@ export const ReportDetail: React.FC = () => {
               </div>
             </div>
           )}
-  
+
         {customMetricSummaries.length > 0 && (
-            <div className="mb-6 bg-white border border-slate-200 rounded-xl p-5 dark:bg-slate-900 dark:border-slate-800">
+          <div className="mb-6 bg-white border border-slate-200 rounded-xl p-5 dark:bg-slate-900 dark:border-slate-800">
             <div className="text-sm text-slate-500 uppercase font-bold mb-3">
-                Log Extracted Metrics
+              Log Extracted Metrics
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                {customMetricSummaries.map(m => (
-                    <div key={m.name} className="bg-slate-50 border border-slate-200 rounded-lg p-4 dark:bg-slate-950/50 dark:border-slate-800">
-                        <div className="font-medium mb-3 flex items-center gap-2">
-                            <Activity className="w-4 h-4 text-indigo-500"/> {m.name}
-                        </div>
-                        <table className="w-full text-xs">
-                            <thead>
-                                <tr className="text-slate-500 border-b border-slate-200 dark:border-slate-800">
-                                    <th className="text-left py-1 pr-2">PID</th>
-                                    <th className="text-right py-1 px-2">Avg</th>
-                                    <th className="text-right py-1 px-2">Min</th>
-                                    <th className="text-right py-1 pl-2">Max</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {m.rows.map(r => (
-                                    <tr key={r.pid} className="border-b border-slate-200 last:border-0 dark:border-slate-800/50">
-                                        <td className="py-1.5 pr-2 tabular-nums">
-                                            {r.pid === 0 ? "App Logs" : (
-                                              <span title={`PID ${r.pid}`}>
-                                                {snapshotByPid.get(r.pid)?.alias || r.pid}
-                                              </span>
-                                            )}
-                                        </td>
-                                        <td className="py-1.5 px-2 text-right tabular-nums font-medium">{r.avg.toFixed(2)}</td>
-                                        <td className="py-1.5 px-2 text-right tabular-nums text-slate-500">{r.min.toFixed(2)}</td>
-                                        <td className="py-1.5 pl-2 text-right tabular-nums text-slate-500">{r.max.toFixed(2)}</td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
-                    </div>
-                ))}
+              {customMetricSummaries.map((m) => (
+                <div
+                  key={m.name}
+                  className="bg-slate-50 border border-slate-200 rounded-lg p-4 dark:bg-slate-950/50 dark:border-slate-800"
+                >
+                  <div className="font-medium mb-3 flex items-center gap-2">
+                    <Activity className="w-4 h-4 text-indigo-500" /> {m.name}
+                  </div>
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-slate-500 border-b border-slate-200 dark:border-slate-800">
+                        <th className="text-left py-1 pr-2">PID</th>
+                        <th className="text-right py-1 px-2">Avg</th>
+                        <th className="text-right py-1 px-2">Min</th>
+                        <th className="text-right py-1 pl-2">Max</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {m.rows.map((r) => (
+                        <tr
+                          key={r.pid}
+                          className="border-b border-slate-200 last:border-0 dark:border-slate-800/50"
+                        >
+                          <td className="py-1.5 pr-2 tabular-nums">
+                            {r.pid === 0 ? (
+                              "App Logs"
+                            ) : (
+                              <span title={`PID ${r.pid}`}>
+                                {snapshotByPid.get(r.pid)?.alias || r.pid}
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-1.5 px-2 text-right tabular-nums font-medium">
+                            {r.avg.toFixed(2)}
+                          </td>
+                          <td className="py-1.5 px-2 text-right tabular-nums text-slate-500">
+                            {r.min.toFixed(2)}
+                          </td>
+                          <td className="py-1.5 pl-2 text-right tabular-nums text-slate-500">
+                            {r.max.toFixed(2)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ))}
             </div>
-            </div>
+          </div>
         )}
 
         {snapshotArr.length > 0 && (

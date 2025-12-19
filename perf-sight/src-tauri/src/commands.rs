@@ -6,7 +6,7 @@ use tauri_plugin_shell::ShellExt;
 use tauri_plugin_shell::process::{CommandEvent, CommandChild};
 use crate::models::{CollectionConfig, ProcessInfo, BatchMetric, MetricPoint, ProcessAlias, LogMetricConfig};
 use crate::collector::create_collector;
-use crate::database::{Database, ReportSummary, ReportDetail, TagStat};
+use crate::database::{Database, ReportSummary, ReportDetail, TagStat, FolderInfo, FolderStats};
 use chrono::{DateTime, Utc, TimeZone};
 use serde_json::json;
 use serde_json::Value;
@@ -16,6 +16,9 @@ use base64::Engine;
 use tauri::path::BaseDirectory;
 use serde::{Deserialize, Serialize};
 use regex::Regex;
+use zip::write::FileOptions;
+use zip::ZipWriter;
+use std::io::Write;
 
 #[derive(Clone)]
 pub struct CollectionState {
@@ -29,6 +32,7 @@ pub struct CollectionState {
     pub started_at: Arc<Mutex<Option<String>>>,
     pub process_snapshot: Arc<Mutex<Vec<ProcessInfo>>>,
     pub process_aliases: Arc<Mutex<Vec<ProcessAlias>>>,
+    pub folder_path: Arc<Mutex<Option<String>>>,
     pub app_version: Arc<Mutex<String>>,
     pub test_context: Arc<Mutex<Option<Value>>>,
     pub stop_after_seconds: Arc<Mutex<Option<u64>>>,
@@ -48,6 +52,7 @@ impl CollectionState {
             started_at: Arc::new(Mutex::new(None)),
             process_snapshot: Arc::new(Mutex::new(Vec::new())),
             process_aliases: Arc::new(Mutex::new(Vec::new())),
+            folder_path: Arc::new(Mutex::new(None)),
             app_version: Arc::new(Mutex::new("unknown".to_string())),
             test_context: Arc::new(Mutex::new(None)),
             stop_after_seconds: Arc::new(Mutex::new(None)),
@@ -65,6 +70,7 @@ pub struct CollectionStatus {
     pub started_at: Option<String>,
     pub test_context: Option<Value>,
     pub process_aliases: Vec<ProcessAlias>,
+    pub folder_path: Option<String>,
     pub stop_after_seconds: Option<u64>,
 }
 
@@ -78,6 +84,7 @@ pub fn get_collection_status(state: State<'_, CollectionState>) -> Result<Collec
         started_at: safe_lock(&state.started_at).clone(),
         test_context: safe_lock(&state.test_context).clone(),
         process_aliases: safe_lock(&state.process_aliases).clone(),
+        folder_path: safe_lock(&state.folder_path).clone(),
         stop_after_seconds: *safe_lock(&state.stop_after_seconds),
     })
 }
@@ -108,6 +115,27 @@ pub fn process_websocket_metric_payload(app: &AppHandle, data: Value, state: &Co
     process_metric_payload(app, data, state);
 }
 
+fn decode_base64_maybe_data_url(s: &str) -> Result<Vec<u8>, String> {
+    // Accept:
+    // - raw base64 "JVBERi0xLjc..."
+    // - "data:application/pdf;base64,JVBERi0xLjc..."
+    // - jsPDF output("datauristring") which often looks like:
+    //   "data:application/pdf;filename=generated.pdf;base64,JVBERi0xLjc..."
+    let trimmed = s.trim();
+    let b64 = if let Some(idx) = trimmed.find("base64,") {
+        &trimmed[idx + "base64,".len()..]
+    } else {
+        trimmed
+    };
+
+    // Some encoders may insert newlines; remove whitespace.
+    let cleaned: String = b64.chars().filter(|c| !c.is_whitespace()).collect();
+
+    base64::engine::general_purpose::STANDARD
+        .decode(cleaned)
+        .map_err(|e| format!("base64 decode failed: {e}"))
+}
+
 #[tauri::command]
 pub async fn export_report_pdf(
     app_handle: AppHandle,
@@ -115,13 +143,7 @@ pub async fn export_report_pdf(
     filename: Option<String>,
     pdf_base64: String
 ) -> Result<String, String> {
-    // Accept either raw base64 or a data URL.
-    let b64 = pdf_base64
-        .strip_prefix("data:application/pdf;base64,")
-        .unwrap_or(pdf_base64.as_str());
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(b64)
-        .map_err(|e| format!("base64 decode failed: {e}"))?;
+    let bytes = decode_base64_maybe_data_url(&pdf_base64)?;
 
     let mut dir = app_handle
         .path()
@@ -154,6 +176,42 @@ pub struct ReportDatasetV1 {
     pub report: ReportDetail,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ExportBundleItemV1 {
+    pub report_id: i64,
+    /// Optional base64 PDF (raw base64 or data URL).
+    pub pdf_base64: Option<String>,
+}
+
+fn safe_slug(s: &str, max_len: usize) -> String {
+    let mut out = String::new();
+    for ch in s.chars() {
+        let c = match ch {
+            'a'..='z' | 'A'..='Z' | '0'..='9' => ch,
+            ' ' | '-' | '_' => '_',
+            _ => '_',
+        };
+        out.push(c);
+        if out.len() >= max_len {
+            break;
+        }
+    }
+    let trimmed = out.trim_matches('_').to_string();
+    if trimmed.is_empty() { "report".to_string() } else { trimmed }
+}
+
+fn compact_time_id(s: &str) -> String {
+    // Keep only digits + 'T' + 'Z' for a stable, filesystem-friendly identifier.
+    // Example: "2025-12-19T13:45:02.123Z" -> "20251219T134502123Z"
+    let mut out = String::new();
+    for ch in s.chars() {
+        if ch.is_ascii_digit() || ch == 'T' || ch == 'Z' {
+            out.push(ch);
+        }
+    }
+    if out.is_empty() { "unknown_time".to_string() } else { out }
+}
+
 #[tauri::command]
 pub fn export_report_dataset(
     app_handle: AppHandle,
@@ -179,6 +237,89 @@ pub fn export_report_dataset(
     let filename = format!("PerfSight_Report_{}_Dataset.json", report_id);
     let path = dir.join(filename);
     std::fs::write(&path, json_str.as_bytes()).map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub fn export_reports_bundle_zip(
+    app_handle: AppHandle,
+    db: State<'_, Database>,
+    items: Vec<ExportBundleItemV1>,
+    filename: Option<String>,
+) -> Result<String, String> {
+    if items.is_empty() {
+        return Err("No reports selected".to_string());
+    }
+
+    let mut dir = app_handle.path().resolve("", BaseDirectory::Download).ok();
+    if dir.is_none() {
+        dir = app_handle.path().app_local_data_dir().ok();
+    }
+    let dir = dir.ok_or("Failed to resolve output directory")?;
+    if !dir.exists() {
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    }
+
+    let name = filename
+        .and_then(|s| {
+            let t = s.trim().to_string();
+            if t.is_empty() { None } else { Some(t) }
+        })
+        .unwrap_or_else(|| format!("PerfSight_Reports_Export_{}.zip", Utc::now().format("%Y%m%d_%H%M%S")));
+    let path = dir.join(name);
+
+    let file = std::fs::File::create(&path).map_err(|e| e.to_string())?;
+    let mut zip = ZipWriter::new(file);
+    let opts = FileOptions::<()>::default()
+        .compression_method(zip::CompressionMethod::Deflated)
+        .unix_permissions(0o644);
+
+    let mut manifest: Vec<Value> = Vec::new();
+
+    for item in items {
+        let report = db.get_report_detail(item.report_id).map_err(|e| e.to_string())?;
+        let title = report.title.clone();
+        let created_at = report.created_at.clone();
+        let created_id = compact_time_id(&created_at);
+        let dataset = ReportDatasetV1 {
+            schema_version: 1,
+            exported_at: Utc::now().to_rfc3339(),
+            report,
+        };
+        let json_str = serde_json::to_string_pretty(&dataset).map_err(|e| e.to_string())?;
+
+        let folder = format!(
+            "{}_{}_{}",
+            created_id,
+            item.report_id,
+            safe_slug(&title, 60)
+        );
+
+        let dataset_path = format!("{}/dataset_{}_{}.json", folder, item.report_id, created_id);
+        zip.start_file(dataset_path, opts).map_err(|e| e.to_string())?;
+        zip.write_all(json_str.as_bytes()).map_err(|e| e.to_string())?;
+
+        let has_pdf = item.pdf_base64.as_ref().is_some();
+        if let Some(pdf_b64_raw) = item.pdf_base64 {
+            let bytes = decode_base64_maybe_data_url(&pdf_b64_raw)?;
+            let pdf_path = format!("{}/report_{}_{}.pdf", folder, item.report_id, created_id);
+            zip.start_file(pdf_path, opts).map_err(|e| e.to_string())?;
+            zip.write_all(&bytes).map_err(|e| e.to_string())?;
+        }
+
+        manifest.push(json!({
+            "report_id": item.report_id,
+            "title": title,
+            "created_at": created_at,
+            "has_pdf": has_pdf,
+        }));
+    }
+
+    zip.start_file("manifest.json", opts).map_err(|e| e.to_string())?;
+    zip.write_all(serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?.as_bytes())
+        .map_err(|e| e.to_string())?;
+
+    zip.finish().map_err(|e| e.to_string())?;
     Ok(path.to_string_lossy().to_string())
 }
 
@@ -477,6 +618,11 @@ pub async fn start_collection(
         .as_ref()
         .map(|tc| serde_json::to_value(tc).unwrap_or_else(|_| json!({})));
     *safe_lock(&state.process_aliases) = config.process_aliases.clone().unwrap_or_default();
+    *safe_lock(&state.folder_path) = config
+        .folder_path
+        .as_ref()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
     *safe_lock(&state.stop_after_seconds) = config.stop_after_seconds;
 
     // Compile regexes for log metrics
@@ -660,6 +806,7 @@ pub async fn stop_collection(
         let app_version = safe_lock(&state.app_version).clone();
         let test_context = safe_lock(&state.test_context).clone();
         let stop_after_seconds = *safe_lock(&state.stop_after_seconds);
+        let folder_path = safe_lock(&state.folder_path).clone();
 
         let cpu_count = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
         let mut sys = sysinfo::System::new_all();
@@ -718,6 +865,7 @@ pub async fn stop_collection(
                 "metric_standard": if mode == "browser" { "chrome" } else { "os" },
                 "interval_ms": interval_ms,
                 "target_pids": target_pids,
+                "folder_path": folder_path,
                 "started_at": started_at,
                 "ended_at": ended_at,
                 "duration_seconds": duration_seconds,
@@ -739,6 +887,7 @@ pub async fn stop_collection(
         *safe_lock(&state.started_at) = None;
         safe_lock(&state.process_snapshot).clear();
         safe_lock(&state.process_aliases).clear();
+        *safe_lock(&state.folder_path) = None;
         *safe_lock(&state.test_context) = None;
         safe_lock(&state.log_metrics).clear();
         return Ok("Stopped and Saved Report".to_string());
@@ -752,6 +901,7 @@ pub async fn stop_collection(
     *safe_lock(&state.started_at) = None;
     safe_lock(&state.process_snapshot).clear();
     safe_lock(&state.process_aliases).clear();
+    *safe_lock(&state.folder_path) = None;
     *safe_lock(&state.test_context) = None;
     safe_lock(&state.log_metrics).clear();
     Ok("Stopped (No Data)".to_string())
@@ -789,6 +939,69 @@ pub fn update_report_title(db: State<'_, Database>, id: i64, title: String) -> R
         return Err("Title cannot be empty".to_string());
     }
     db.update_report_title(id, &t).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn update_report_folder_path(
+    db: State<'_, Database>,
+    id: i64,
+    folder_path: String,
+) -> Result<usize, String> {
+    let raw = folder_path.trim().to_string();
+    let normalized = raw
+        .split('/')
+        .map(|p| p.trim())
+        .filter(|p| !p.is_empty() && *p != ".")
+        .collect::<Vec<_>>()
+        .join("/");
+    db.update_report_folder_path(id, &normalized)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn update_reports_folder_path(
+    db: State<'_, Database>,
+    ids: Vec<i64>,
+    folder_path: String,
+) -> Result<usize, String> {
+    let raw = folder_path.trim().to_string();
+    let normalized = raw
+        .split('/')
+        .map(|p| p.trim())
+        .filter(|p| !p.is_empty() && *p != ".")
+        .collect::<Vec<_>>()
+        .join("/");
+    db.update_reports_folder_path(&ids, &normalized)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_folder_paths(db: State<'_, Database>) -> Result<Vec<FolderInfo>, String> {
+    db.list_folder_paths().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn create_folder(db: State<'_, Database>, parent_path: String, name: String) -> Result<String, String> {
+    db.create_folder(&parent_path, &name).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_folder_stats(db: State<'_, Database>, path: String) -> Result<FolderStats, String> {
+    db.get_folder_stats(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn rename_folder(db: State<'_, Database>, path: String, new_name: String) -> Result<String, String> {
+    db.rename_folder(&path, &new_name).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_folder(
+    db: State<'_, Database>,
+    path: String,
+    strategy: Option<String>,
+) -> Result<(usize, usize), String> {
+    db.delete_folder(&path, strategy.as_deref()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

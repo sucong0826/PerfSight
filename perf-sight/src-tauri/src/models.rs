@@ -53,6 +53,8 @@ pub struct CollectionConfig {
     pub target_pids: Vec<u32>,
     pub interval_ms: u64,
     pub mode: String, // "system" | "browser"
+    /// Optional folder path (e.g. "Release/Scenario") for organizing reports.
+    pub folder_path: Option<String>,
     pub test_context: Option<TestContext>,
     pub process_aliases: Option<Vec<ProcessAlias>>,
     /// Optional: auto-stop after N seconds and generate report.
