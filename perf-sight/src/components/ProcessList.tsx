@@ -59,7 +59,7 @@ export const ProcessList: React.FC<ProcessListProps> = ({
     <div className="bg-white border border-slate-200 rounded-xl p-4 flex flex-col flex-1 min-h-0 shadow-lg h-full dark:bg-slate-900/50 dark:border-slate-800">
         <div className="flex justify-between items-center mb-3">
             <h2 className="text-sm font-semibold flex items-center gap-2 text-slate-600 dark:text-slate-400">
-                <Search className="w-4 h-4" /> {mode === 'browser' ? 'Select Tab' : 'Select Process'}
+                <Search className="w-4 h-4" /> Select Process
             </h2>
             <button onClick={onRefresh} disabled={isCollecting} className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-500 dark:text-slate-400">
                 <RefreshCw className={`w-3.5 h-3.5 ${isCollecting ? 'animate-spin' : ''}`} />

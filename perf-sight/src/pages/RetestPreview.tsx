@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { ArrowLeft, Loader, RotateCcw } from "lucide-react";
+import { ArrowLeft, Loader, RotateCcw, Square, CheckSquare, X } from "lucide-react";
 import { ProcessList } from "../components/ProcessList";
 import type { ProcessInfo } from "../components/Charts";
 
@@ -81,33 +81,104 @@ export const RetestPreview: React.FC = () => {
   const [filterText, setFilterText] = useState("");
   const [isStarting, setIsStarting] = useState(false);
   const [autoSelectedMsg, setAutoSelectedMsg] = useState<string | null>(null);
+  const [hiddenSnapshotPids, setHiddenSnapshotPids] = useState<Set<number>>(new Set());
 
   const isStartingRef = useRef(false);
 
-  const snapshot = useMemo(() => {
+  // Full snapshot from report (for matching logic)
+  const fullSnapshot = useMemo(() => {
     const arr: any[] = Array.isArray(report?.meta?.process_snapshot)
       ? report!.meta.process_snapshot
       : [];
     return arr;
   }, [report]);
 
-  const prevTargetPids = useMemo(() => {
-    const pids: any = report?.meta?.collection?.target_pids;
-    return Array.isArray(pids) ? pids.map((n: any) => Number(n)).filter((n: any) => Number.isFinite(n)) : [];
-  }, [report]);
+  // Filtered snapshot for display (excludes manually hidden items)
+  const snapshot = useMemo(() => {
+    return fullSnapshot.filter((p: any) => !hiddenSnapshotPids.has(Number(p?.pid)));
+  }, [fullSnapshot, hiddenSnapshotPids]);
 
-  const inferredPidsFromMetrics = useMemo(() => {
-    const seen = new Set<number>();
-    const batches: any[] = Array.isArray(report?.metrics) ? (report!.metrics as any[]) : [];
-    for (const b of batches) {
-      const m = b?.metrics ?? {};
-      for (const k of Object.keys(m)) {
-        const pid = Number(k);
-        if (Number.isFinite(pid)) seen.add(pid);
-      }
+  // Find the matched PID in current process list for a snapshot item
+  const findMatchedPid = (snapshotItem: any): number | null => {
+    const pid = typeof snapshotItem?.pid === "number" ? snapshotItem.pid : null;
+    const title = normalize(snapshotItem?.title);
+    const url = normalize(snapshotItem?.url);
+    const name = normalize(snapshotItem?.name);
+    const procType = normalize(snapshotItem?.proc_type);
+    const alias = normalize(snapshotItem?.alias);
+
+    // 1) Same PID still exists
+    if (pid != null && processes.some((p) => p.pid === pid)) {
+      return pid;
     }
-    return Array.from(seen);
-  }, [report]);
+
+    // 2) Browser: match by url/title/alias
+    if (mode === "browser") {
+      const found = processes.find((p) => {
+        const pt = normalize(p.title);
+        const pu = normalize(p.url);
+        if (url && pu && pu === url) return true;
+        if (title && pt && pt === title) return true;
+        if (alias && pt && pt.includes(alias)) return true;
+        return false;
+      });
+      if (found) return found.pid;
+    }
+
+    // 3) System: match by name + proc_type
+    const found = processes.find((p) => {
+      if (!name) return false;
+      if (normalize(p.name) !== name) return false;
+      if (procType && normalize(p.proc_type) !== procType) return false;
+      return true;
+    });
+    if (found) return found.pid;
+
+    // 4) Fallback: match by name only
+    if (name) {
+      const fallback = processes.find((p) => normalize(p.name) === name);
+      if (fallback) return fallback.pid;
+    }
+
+    return null;
+  };
+
+  // Toggle selection for a snapshot item (find matched PID and toggle)
+  const toggleSnapshotSelection = (snapshotItem: any) => {
+    const matchedPid = findMatchedPid(snapshotItem);
+    if (matchedPid == null) return;
+    
+    const next = new Set(selectedPids);
+    if (next.has(matchedPid)) {
+      next.delete(matchedPid);
+    } else {
+      next.add(matchedPid);
+    }
+    setSelectedPids(next);
+  };
+
+  // Check if a snapshot item is currently selected
+  const isSnapshotSelected = (snapshotItem: any): boolean => {
+    const matchedPid = findMatchedPid(snapshotItem);
+    return matchedPid != null && selectedPids.has(matchedPid);
+  };
+
+  // Remove snapshot item from display and unselect it
+  const removeSnapshotItem = (snapshotItem: any) => {
+    const pid = Number(snapshotItem?.pid);
+    if (Number.isFinite(pid)) {
+      setHiddenSnapshotPids((prev) => new Set([...prev, pid]));
+    }
+    // Also unselect the matched PID
+    const matchedPid = findMatchedPid(snapshotItem);
+    if (matchedPid != null) {
+      setSelectedPids((prev) => {
+        const next = new Set(prev);
+        next.delete(matchedPid);
+        return next;
+      });
+    }
+  };
 
   const loadProcesses = async (m: "system" | "browser") => {
     try {
@@ -121,17 +192,43 @@ export const RetestPreview: React.FC = () => {
     }
   };
 
-  const bestEffortMatchSnapshot = (list: ProcessInfo[], m: "system" | "browser") => {
+  // Pass reportData directly to avoid stale closure issues
+  const bestEffortMatchSnapshot = (
+    list: ProcessInfo[],
+    m: "system" | "browser",
+    reportData?: ReportDetailData | null
+  ) => {
     const byPid = new Map<number, ProcessInfo>();
     list.forEach((p) => byPid.set(p.pid, p));
 
+    // Use passed reportData instead of closure values to avoid stale state
+    const snapshotArr: any[] = Array.isArray(reportData?.meta?.process_snapshot)
+      ? reportData!.meta.process_snapshot
+      : [];
+    const targetPids: number[] = (() => {
+      const pids: any = reportData?.meta?.collection?.target_pids;
+      return Array.isArray(pids) ? pids.map((n: any) => Number(n)).filter((n: any) => Number.isFinite(n)) : [];
+    })();
+    const metricsInferredPids: number[] = (() => {
+      const seen = new Set<number>();
+      const batches: any[] = Array.isArray(reportData?.metrics) ? (reportData!.metrics as any[]) : [];
+      for (const b of batches) {
+        const m = b?.metrics ?? {};
+        for (const k of Object.keys(m)) {
+          const pid = Number(k);
+          if (Number.isFinite(pid)) seen.add(pid);
+        }
+      }
+      return Array.from(seen);
+    })();
+
     const chosen: number[] = [];
-    const sourceArr = snapshot.length
-      ? snapshot
-      : prevTargetPids.length
-      ? prevTargetPids.map((pid) => ({ pid }))
-      : inferredPidsFromMetrics.length
-      ? inferredPidsFromMetrics.map((pid) => ({ pid }))
+    const sourceArr = snapshotArr.length
+      ? snapshotArr
+      : targetPids.length
+      ? targetPids.map((pid) => ({ pid }))
+      : metricsInferredPids.length
+      ? metricsInferredPids.map((pid) => ({ pid }))
       : [];
     for (const s of sourceArr) {
       const pid = typeof s?.pid === "number" ? (s.pid as number) : null;
@@ -139,20 +236,25 @@ export const RetestPreview: React.FC = () => {
       const url = normalize(s?.url);
       const name = normalize(s?.name);
       const procType = normalize(s?.proc_type);
+      const alias = normalize(s?.alias);
 
-      // 1) Same PID
+      // 1) Same PID still exists
       if (pid != null && byPid.has(pid)) {
         chosen.push(pid);
         continue;
       }
 
-      // 2) Browser: match by url/title
+      // 2) Browser: match by url/title/alias
       if (m === "browser") {
         const found = list.find((p) => {
           const pt = normalize(p.title);
           const pu = normalize(p.url);
+          // Match by URL
           if (url && pu && pu === url) return true;
+          // Match by title
           if (title && pt && pt === title) return true;
+          // Match by alias in title (partial match)
+          if (alias && pt && pt.includes(alias)) return true;
           return false;
         });
         if (found) {
@@ -161,14 +263,24 @@ export const RetestPreview: React.FC = () => {
         }
       }
 
-      // 3) System: match by name + proc_type
+      // 3) System: match by name + proc_type, or just name
       const found = list.find((p) => {
         if (!name) return false;
         if (normalize(p.name) !== name) return false;
+        // If proc_type specified, must match
         if (procType && normalize(p.proc_type) !== procType) return false;
         return true;
       });
-      if (found) chosen.push(found.pid);
+      if (found) {
+        chosen.push(found.pid);
+        continue;
+      }
+      
+      // 4) Fallback: match by name only (for system mode)
+      if (m === "system" && name) {
+        const fallback = list.find((p) => normalize(p.name) === name);
+        if (fallback) chosen.push(fallback.pid);
+      }
     }
 
     const uniq = Array.from(new Set(chosen));
@@ -226,7 +338,7 @@ export const RetestPreview: React.FC = () => {
         setNotes(tc?.notes ?? "");
 
         const list = await loadProcesses(m);
-        bestEffortMatchSnapshot(list, m);
+        bestEffortMatchSnapshot(list, m, data);
 
         // Prefill process aliases from the report snapshot when available.
         const aliasMap: Record<number, string> = {};
@@ -252,10 +364,10 @@ export const RetestPreview: React.FC = () => {
     (async () => {
       if (!report) return;
       const list = await loadProcesses(mode);
-      bestEffortMatchSnapshot(list, mode);
+      bestEffortMatchSnapshot(list, mode, report);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode]);
+  }, [mode, report]);
 
   const handleStart = async () => {
     if (isStartingRef.current) return;
@@ -513,24 +625,68 @@ export const RetestPreview: React.FC = () => {
                 </div>
                 <div className="max-h-[340px] overflow-y-auto custom-scrollbar space-y-2">
                   {snapshot.length ? (
-                    snapshot.map((p: any) => (
-                      <div
-                        key={`snap_${p.pid}`}
-                        className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm dark:border-slate-800 dark:bg-slate-950/50"
-                      >
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="truncate font-medium">
-                            {p.alias ?? p.title ?? p.name ?? `PID ${p.pid}`}
+                    snapshot.map((p: any) => {
+                      const selected = isSnapshotSelected(p);
+                      const matchedPid = findMatchedPid(p);
+                      const hasMatch = matchedPid != null;
+                      
+                      return (
+                        <div
+                          key={`snap_${p.pid}`}
+                          className={`rounded-lg border p-3 text-sm transition-colors ${
+                            selected
+                              ? "border-indigo-400 bg-indigo-50 dark:border-indigo-600 dark:bg-indigo-900/20"
+                              : "border-slate-200 bg-slate-50 dark:border-slate-800 dark:bg-slate-950/50"
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-2 min-w-0 flex-1">
+                              {/* Toggle selection button */}
+                              <button
+                                type="button"
+                                onClick={() => toggleSnapshotSelection(p)}
+                                disabled={!hasMatch}
+                                className={`shrink-0 p-1 rounded transition-colors ${
+                                  hasMatch
+                                    ? "hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-400"
+                                    : "opacity-40 cursor-not-allowed text-slate-400"
+                                }`}
+                                title={hasMatch ? (selected ? "Unselect process" : "Select process") : "Process not found in current list"}
+                              >
+                                {selected ? (
+                                  <CheckSquare className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                                ) : (
+                                  <Square className="w-4 h-4" />
+                                )}
+                              </button>
+                              <div className="truncate font-medium">
+                                {p.alias ?? p.title ?? p.name ?? `PID ${p.pid}`}
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <span className="text-xs text-slate-500 tabular-nums mr-1">
+                                {p.pid}
+                              </span>
+                              {/* Remove from list button */}
+                              <button
+                                type="button"
+                                onClick={() => removeSnapshotItem(p)}
+                                className="p-1 rounded hover:bg-rose-100 dark:hover:bg-rose-900/30 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 transition-colors"
+                                title="Remove from previous selection and unselect"
+                              >
+                                <X className="w-4 h-4" />
+                              </button>
+                            </div>
                           </div>
-                          <div className="text-xs text-slate-500 tabular-nums">
-                            {p.pid}
+                          <div className="text-xs text-slate-500 truncate pl-7">
+                            {p.proc_type ?? "—"} {p.url ? `• ${p.url}` : ""}
+                            {!hasMatch && (
+                              <span className="ml-2 text-amber-600 dark:text-amber-400">(not found)</span>
+                            )}
                           </div>
                         </div>
-                        <div className="text-xs text-slate-500 truncate">
-                          {p.proc_type ?? "—"} {p.url ? `• ${p.url}` : ""}
-                        </div>
-                      </div>
-                    ))
+                      );
+                    })
                   ) : (
                     <div className="text-sm text-slate-500">
                       No snapshot in this report.

@@ -1,10 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { Activity } from 'lucide-react';
+import { Activity, ChevronDown, Folder, Plus } from 'lucide-react';
 import { PerformanceCharts, ProcessInfo } from '../components/Charts';
 import { ProcessList } from '../components/ProcessList';
 import { LogMetricSettings, LogMetricConfig } from '../components/LogMetricSettings';
+
+interface FolderInfo {
+  path: string;
+  name?: string;
+}
 
 // Types
 interface MetricPoint {
@@ -89,6 +94,9 @@ export const Dashboard: React.FC = () => {
     {}
   );
   const [folderPath, setFolderPath] = useState("");
+  const [existingFolders, setExistingFolders] = useState<FolderInfo[]>([]);
+  const [showFolderPicker, setShowFolderPicker] = useState(false);
+  const [newFolderMode, setNewFolderMode] = useState(false);
 
   const [isCollecting, setIsCollecting] = useState(false);
   const [chartData, setChartData] = useState<any[]>([]);
@@ -141,6 +149,13 @@ export const Dashboard: React.FC = () => {
         try {
           const stats = (await invoke("get_known_tags")) as TagStat[];
           setKnownTags(stats || []);
+        } catch {
+          // ignore
+        }
+        // Load existing folders (best-effort).
+        try {
+          const folders = (await invoke("list_folder_paths")) as FolderInfo[];
+          setExistingFolders(folders || []);
         } catch {
           // ignore
         }
@@ -571,13 +586,91 @@ export const Dashboard: React.FC = () => {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div className="md:col-span-2">
                 <div className="text-xs text-slate-500 mb-1">Folder (optional)</div>
-                <input
-                  value={folderPath}
-                  onChange={(e) => setFolderPath(e.target.value)}
-                  disabled={isCollecting}
-                  className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 disabled:opacity-60 dark:bg-slate-950 dark:border-slate-800 dark:text-slate-200 dark:placeholder:text-slate-600"
-                  placeholder="e.g. Release_1.2.3/HomeFeedScroll"
-                />
+                <div className="relative">
+                  {newFolderMode ? (
+                    <div className="flex items-center gap-2">
+                      <input
+                        value={folderPath}
+                        onChange={(e) => setFolderPath(e.target.value)}
+                        disabled={isCollecting}
+                        className="flex-1 bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 disabled:opacity-60 dark:bg-slate-950 dark:border-slate-800 dark:text-slate-200 dark:placeholder:text-slate-600"
+                        placeholder="e.g. Release_1.2.3/HomeFeedScroll"
+                        autoFocus
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setNewFolderMode(false)}
+                        disabled={isCollecting}
+                        className="px-2 py-2 text-xs text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => !isCollecting && setShowFolderPicker(!showFolderPicker)}
+                      disabled={isCollecting}
+                      className="w-full flex items-center justify-between bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 disabled:opacity-60 dark:bg-slate-950 dark:border-slate-800 dark:text-slate-200 hover:border-indigo-400 transition-colors"
+                    >
+                      <span className="flex items-center gap-2 truncate">
+                        <Folder className="w-4 h-4 text-slate-400" />
+                        {folderPath || <span className="text-slate-400">Select or create folder...</span>}
+                      </span>
+                      <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${showFolderPicker ? 'rotate-180' : ''}`} />
+                    </button>
+                  )}
+                  
+                  {showFolderPicker && !newFolderMode && (
+                    <div className="absolute z-20 mt-1 w-full bg-white border border-slate-200 rounded-lg shadow-lg max-h-[200px] overflow-y-auto dark:bg-slate-900 dark:border-slate-700">
+                      {/* Root option */}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setFolderPath("");
+                          setShowFolderPicker(false);
+                        }}
+                        className={`w-full text-left px-3 py-2 text-sm hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-2 ${
+                          !folderPath ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300' : ''
+                        }`}
+                      >
+                        <Folder className="w-4 h-4" />
+                        <span className="text-slate-500 italic">Root (no folder)</span>
+                      </button>
+                      
+                      {/* Existing folders */}
+                      {existingFolders.filter(f => f.path).map((f) => (
+                        <button
+                          key={f.path}
+                          type="button"
+                          onClick={() => {
+                            setFolderPath(f.path);
+                            setShowFolderPicker(false);
+                          }}
+                          className={`w-full text-left px-3 py-2 text-sm hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-2 ${
+                            folderPath === f.path ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300' : ''
+                          }`}
+                        >
+                          <Folder className="w-4 h-4" />
+                          {f.path}
+                        </button>
+                      ))}
+                      
+                      {/* Create new folder option */}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowFolderPicker(false);
+                          setNewFolderMode(true);
+                        }}
+                        className="w-full text-left px-3 py-2 text-sm hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-2 text-indigo-600 dark:text-indigo-400 border-t border-slate-200 dark:border-slate-700"
+                      >
+                        <Plus className="w-4 h-4" />
+                        Create new folder path...
+                      </button>
+                    </div>
+                  )}
+                </div>
                 <div className="mt-1 text-[11px] text-slate-500">
                   Used by Reports folder tree. Format: <span className="font-mono">Release/Scenario</span>
                 </div>

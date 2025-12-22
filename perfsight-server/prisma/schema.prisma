@@ -1,0 +1,59 @@
+// PerfSight Server Database Schema (MVP)
+// Using SQLite for simplicity; can migrate to Postgres for V1
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./perfsight.db"
+}
+
+model Run {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Original report info
+  originalId   Int?     // Original report ID from client (for reference)
+  title        String
+  reportDate   DateTime // When the original test was run
+
+  // Indexed fields for filtering (extracted from meta)
+  release      String?  // e.g., "6.7.0" (from tag release:xxx or meta)
+  scenario     String?  // scenario_name from test_context
+  buildId      String?  // build_id from test_context
+  platform     String?  // e.g., "macos", "windows", "chromeos", "android", "ios"
+  browser      String?  // e.g., "chrome-stable", "chrome-canary"
+  mode         String?  // "system", "browser", "hybrid"
+
+  // Tags (stored as JSON array string for SQLite compatibility)
+  tags         String   @default("[]")
+
+  // Duration
+  durationSeconds Int?
+
+  // Full dataset stored as JSON (for MVP; move to file/S3 for V1)
+  datasetJson  String   // Full ReportDatasetV1 JSON
+
+  // Computed fields (optional, for quick access)
+  avgCpu       Float?
+  avgMemMb     Float?
+  p95Cpu       Float?
+  p95MemMb     Float?
+
+  @@index([release])
+  @@index([scenario])
+  @@index([buildId])
+  @@index([platform])
+  @@index([createdAt])
+}
+
+model Project {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  token     String   @unique // API token for this project
+  createdAt DateTime @default(now())
+}
+

@@ -1,0 +1,938 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PerfSight Server</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- Chart.js for simple charts -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    body { font-family: 'Inter', sans-serif; }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-900 min-h-screen">
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useEffect, useMemo, useRef } = React;
+
+    // ========================
+    // API Client
+    // ========================
+    const api = {
+      async getRuns(filters = {}) {
+        const params = new URLSearchParams();
+        Object.entries(filters).forEach(([k, v]) => { if (v) params.set(k, v); });
+        const res = await fetch(`/api/v1/runs?${params}`);
+        return res.json();
+      },
+      async getRun(id) {
+        const res = await fetch(`/api/v1/runs/${id}`);
+        return res.json();
+      },
+      async getFilters() {
+        const res = await fetch('/api/v1/filters');
+        return res.json();
+      },
+      async deleteRun(id) {
+        const res = await fetch(`/api/v1/runs/${id}`, { method: 'DELETE' });
+        return res.json();
+      },
+    };
+
+    // ========================
+    // Utility Functions
+    // ========================
+    const formatDate = (d) => new Date(d).toLocaleString();
+    const formatDuration = (s) => s ? `${Math.floor(s / 60)}m ${s % 60}s` : '—';
+    const formatCpu = (v) => v != null ? `${v.toFixed(1)}%` : '—';
+    const formatMem = (v) => v != null ? `${v.toFixed(1)} MB` : '—';
+
+    const COLORS = [
+      '#6366f1', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', 
+      '#ec4899', '#06b6d4', '#84cc16'
+    ];
+
+    // ========================
+    // Chart Component using Chart.js
+    // ========================
+    function LineChartComponent({ data, dataKeys, title, yLabel, formatValue }) {
+      const canvasRef = useRef(null);
+      const chartRef = useRef(null);
+
+      useEffect(() => {
+        if (!canvasRef.current || !data.length) return;
+
+        // Destroy previous chart
+        if (chartRef.current) {
+          chartRef.current.destroy();
+        }
+
+        const ctx = canvasRef.current.getContext('2d');
+        const datasets = dataKeys.map((key, idx) => ({
+          label: key.label,
+          data: data.map(d => d[key.key]),
+          borderColor: COLORS[idx % COLORS.length],
+          backgroundColor: COLORS[idx % COLORS.length] + '20',
+          borderWidth: 2,
+          pointRadius: 0,
+          tension: 0.3,
+          fill: false,
+        }));
+
+        chartRef.current = new Chart(ctx, {
+          type: 'line',
+          data: {
+            labels: data.map(d => `${Math.round(d.elapsed)}s`),
+            datasets,
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: {
+              mode: 'index',
+              intersect: false,
+            },
+            plugins: {
+              legend: {
+                position: 'top',
+              },
+              tooltip: {
+                callbacks: {
+                  label: (ctx) => `${ctx.dataset.label}: ${formatValue ? formatValue(ctx.raw) : ctx.raw}`,
+                },
+              },
+            },
+            scales: {
+              x: {
+                title: { display: true, text: 'Time' },
+                ticks: { maxTicksLimit: 10 },
+              },
+              y: {
+                title: { display: true, text: yLabel },
+                beginAtZero: true,
+              },
+            },
+          },
+        });
+
+        return () => {
+          if (chartRef.current) {
+            chartRef.current.destroy();
+          }
+        };
+      }, [data, dataKeys]);
+
+      return (
+        <div className="bg-white border border-slate-200 rounded-xl p-5 mb-6">
+          <h3 className="font-medium text-slate-800 mb-4">{title}</h3>
+          <div className="h-[300px]">
+            <canvas ref={canvasRef}></canvas>
+          </div>
+        </div>
+      );
+    }
+
+    // ========================
+    // Components
+    // ========================
+
+    function RunsList({ onSelect }) {
+      const [runs, setRuns] = useState([]);
+      const [filters, setFilters] = useState({});
+      const [filterOptions, setFilterOptions] = useState({});
+      const [loading, setLoading] = useState(true);
+      const [importing, setImporting] = useState(false);
+      const fileInputRef = useRef(null);
+
+      const loadRuns = () => {
+        setLoading(true);
+        api.getRuns(filters)
+          .then(data => setRuns(data.runs || []))
+          .finally(() => setLoading(false));
+      };
+
+      useEffect(() => {
+        api.getFilters().then(setFilterOptions).catch(console.error);
+      }, []);
+
+      useEffect(() => {
+        loadRuns();
+      }, [filters]);
+
+      const handleDelete = async (e, id) => {
+        e.stopPropagation();
+        if (!confirm('Delete this run?')) return;
+        await api.deleteRun(id);
+        setRuns(runs.filter(r => r.id !== id));
+      };
+
+      const handleImport = async (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        
+        try {
+          setImporting(true);
+          const text = await file.text();
+          const dataset = JSON.parse(text);
+          
+          // Validate dataset structure
+          if (dataset.schema_version !== 1 || !dataset.report) {
+            throw new Error('Invalid dataset format. Expected schema_version: 1 and report object.');
+          }
+
+          const res = await fetch('/api/v1/datasets', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: text,
+          });
+
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.error || `Upload failed: ${res.status}`);
+          }
+
+          const result = await res.json();
+          alert(`✅ Import successful!\nRun ID: ${result.run?.id}\nTitle: ${result.run?.title}`);
+          
+          // Refresh list
+          loadRuns();
+          api.getFilters().then(setFilterOptions).catch(console.error);
+        } catch (err) {
+          console.error('Import failed:', err);
+          alert(`❌ Import failed: ${err.message}`);
+        } finally {
+          setImporting(false);
+          // Reset file input
+          if (fileInputRef.current) fileInputRef.current.value = '';
+        }
+      };
+
+      return (
+        <div className="p-6">
+          <div className="flex items-center justify-between mb-6">
+            <h1 className="text-2xl font-bold text-slate-800">Test Reports</h1>
+            <div className="flex items-center gap-4">
+              <div className="text-sm text-slate-500">{runs.length} reports</div>
+              <input
+                type="file"
+                accept=".json"
+                ref={fileInputRef}
+                onChange={handleImport}
+                className="hidden"
+                id="import-file-input"
+              />
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                disabled={importing}
+                className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+              >
+                {importing ? (
+                  <>
+                    <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"/>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"/>
+                    </svg>
+                    Importing...
+                  </>
+                ) : (
+                  <>
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                    </svg>
+                    Import Dataset
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+
+          {/* Filters */}
+          <div className="flex flex-wrap gap-3 mb-6 p-4 bg-white rounded-xl border border-slate-200 shadow-sm">
+            <select 
+              className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
+              value={filters.release || ''}
+              onChange={e => setFilters({...filters, release: e.target.value})}
+            >
+              <option value="">All Releases</option>
+              {(filterOptions.releases || []).map(r => 
+                <option key={r} value={r}>{r}</option>
+              )}
+            </select>
+            <select 
+              className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
+              value={filters.scenario || ''}
+              onChange={e => setFilters({...filters, scenario: e.target.value})}
+            >
+              <option value="">All Scenarios</option>
+              {(filterOptions.scenarios || []).map(s => 
+                <option key={s} value={s}>{s}</option>
+              )}
+            </select>
+            <select 
+              className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
+              value={filters.platform || ''}
+              onChange={e => setFilters({...filters, platform: e.target.value})}
+            >
+              <option value="">All Platforms</option>
+              {(filterOptions.platforms || []).map(p => 
+                <option key={p} value={p}>{p}</option>
+              )}
+            </select>
+            <input 
+              type="text"
+              placeholder="Search by build ID..."
+              className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm w-48"
+              value={filters.buildId || ''}
+              onChange={e => setFilters({...filters, buildId: e.target.value})}
+            />
+            {Object.values(filters).some(Boolean) && (
+              <button 
+                onClick={() => setFilters({})}
+                className="px-3 py-2 text-sm text-slate-500 hover:text-slate-700"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+
+          {/* Runs List */}
+          {loading ? (
+            <div className="text-center py-12 text-slate-500">Loading...</div>
+          ) : runs.length === 0 ? (
+            <div className="text-center py-12 text-slate-500">
+              No reports found. Upload a dataset from PerfSight Desktop.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {runs.map(run => (
+                <div 
+                  key={run.id}
+                  onClick={() => onSelect(run.id)}
+                  className="bg-white border border-slate-200 rounded-xl p-4 hover:border-indigo-400 cursor-pointer transition-colors shadow-sm"
+                >
+                  <div className="flex items-start justify-between">
+                    <div className="min-w-0 flex-1">
+                      <div className="font-medium text-slate-800 truncate">{run.title}</div>
+                      <div className="text-sm text-slate-500 mt-1">
+                        {formatDate(run.reportDate)}
+                        {run.durationSeconds && <span className="ml-3">⏱ {formatDuration(run.durationSeconds)}</span>}
+                      </div>
+                      <div className="flex flex-wrap gap-2 mt-2">
+                        {run.release && (
+                          <span className="px-2 py-0.5 bg-indigo-100 text-indigo-700 rounded text-xs font-medium">
+                            {run.release}
+                          </span>
+                        )}
+                        {run.scenario && (
+                          <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded text-xs">
+                            {run.scenario}
+                          </span>
+                        )}
+                        {run.platform && (
+                          <span className="px-2 py-0.5 bg-slate-100 text-slate-600 rounded text-xs">
+                            {run.platform}
+                          </span>
+                        )}
+                        {run.mode && (
+                          <span className="px-2 py-0.5 bg-amber-100 text-amber-700 rounded text-xs">
+                            {run.mode}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="text-right ml-4 shrink-0">
+                      <div className="text-sm">
+                        <span className="text-slate-500">CPU:</span>{' '}
+                        <span className="font-medium">{formatCpu(run.avgCpu)}</span>
+                        {run.p95Cpu != null && (
+                          <span className="text-slate-400 ml-1">(P95: {formatCpu(run.p95Cpu)})</span>
+                        )}
+                      </div>
+                      <div className="text-sm mt-1">
+                        <span className="text-slate-500">Mem:</span>{' '}
+                        <span className="font-medium">{formatMem(run.avgMemMb)}</span>
+                        {run.p95MemMb != null && (
+                          <span className="text-slate-400 ml-1">(P95: {formatMem(run.p95MemMb)})</span>
+                        )}
+                      </div>
+                      <button 
+                        onClick={(e) => handleDelete(e, run.id)}
+                        className="mt-2 text-xs text-rose-500 hover:text-rose-700"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    function RunDetail({ runId, onBack }) {
+      const [run, setRun] = useState(null);
+      const [loading, setLoading] = useState(true);
+
+      useEffect(() => {
+        setLoading(true);
+        api.getRun(runId)
+          .then(setRun)
+          .catch(console.error)
+          .finally(() => setLoading(false));
+      }, [runId]);
+
+      // Helper functions for statistics
+      const percentile = (arr, q) => {
+        if (!arr.length) return null;
+        const sorted = [...arr].sort((a, b) => a - b);
+        const idx = Math.round((sorted.length - 1) * q);
+        return sorted[Math.min(Math.max(idx, 0), sorted.length - 1)];
+      };
+      const avg = (arr) => arr.length ? arr.reduce((s, v) => s + v, 0) / arr.length : null;
+      const stddev = (arr, mean) => {
+        if (!arr.length || mean == null) return null;
+        const v = arr.reduce((acc, x) => acc + (x - mean) * (x - mean), 0) / arr.length;
+        return Math.sqrt(v);
+      };
+      const linregSlope = (ys) => {
+        const n = ys.length;
+        if (n <= 1) return 0;
+        const sumX = ((n - 1) * n) / 2;
+        let sumY = 0, sumXY = 0, sumXX = 0;
+        for (let i = 0; i < n; i++) {
+          sumY += ys[i];
+          sumXY += i * ys[i];
+          sumXX += i * i;
+        }
+        const denom = n * sumXX - sumX * sumX;
+        return denom === 0 ? 0 : (n * sumXY - sumX * sumY) / denom;
+      };
+
+      // Process metrics for charts AND per-process summaries
+      const { chartData, pids, processLabels, perPidSummaries } = useMemo(() => {
+        if (!run?.report?.metrics) return { chartData: [], pids: [], processLabels: {}, perPidSummaries: [] };
+        
+        const metrics = run.report.metrics;
+        const startTime = metrics[0]?.timestamp ? new Date(metrics[0].timestamp).getTime() : 0;
+        const pidSet = new Set();
+        const labels = {};
+        const byPid = new Map();
+        
+        // Get process labels from snapshot
+        const snapshot = run.report?.meta?.process_snapshot || [];
+        const snapByPid = new Map();
+        for (const p of snapshot) {
+          if (p.pid) {
+            labels[p.pid] = p.alias || p.title || p.name || `PID ${p.pid}`;
+            snapByPid.set(p.pid, p);
+          }
+        }
+        
+        const data = metrics.map(batch => {
+          const ts = new Date(batch.timestamp).getTime();
+          const elapsed = (ts - startTime) / 1000;
+          const row = { timestamp: batch.timestamp, elapsed };
+          
+          for (const [pidStr, m] of Object.entries(batch.metrics || {})) {
+            const pid = Number(pidStr);
+            pidSet.add(pid);
+            const cpu = m.cpu_chrome_usage ?? m.cpu_os_usage ?? m.cpu_usage;
+            const mem = m.memory_private ?? m.memory_footprint ?? m.memory_rss;
+            if (typeof cpu === 'number') row[`cpu_${pid}`] = cpu;
+            if (typeof mem === 'number') row[`mem_${pid}`] = mem / (1024 * 1024);
+            if (!labels[pid]) labels[pid] = `PID ${pid}`;
+            
+            // Collect for per-PID stats
+            if (!byPid.has(pid)) byPid.set(pid, { cpu: [], memMb: [] });
+            const s = byPid.get(pid);
+            if (typeof cpu === 'number' && Number.isFinite(cpu)) s.cpu.push(cpu);
+            if (typeof mem === 'number' && Number.isFinite(mem)) s.memMb.push(mem / (1024 * 1024));
+          }
+          return row;
+        });
+
+        // Calculate per-PID summaries
+        const summaries = Array.from(byPid.entries()).map(([pid, s]) => {
+          const snap = snapByPid.get(pid);
+          const avgCpu = avg(s.cpu);
+          const maxCpu = s.cpu.length ? Math.max(...s.cpu) : null;
+          const p50Cpu = percentile(s.cpu, 0.5);
+          const p90Cpu = percentile(s.cpu, 0.9);
+          const p95Cpu = percentile(s.cpu, 0.95);
+          const p99Cpu = percentile(s.cpu, 0.99);
+          const cpuStd = stddev(s.cpu, avgCpu);
+          const cpuHigh30 = s.cpu.length ? s.cpu.filter(v => v > 30).length / s.cpu.length : null;
+          const cpuHigh60 = s.cpu.length ? s.cpu.filter(v => v > 60).length / s.cpu.length : null;
+          
+          const avgMem = avg(s.memMb);
+          const maxMem = s.memMb.length ? Math.max(...s.memMb) : null;
+          const p50Mem = percentile(s.memMb, 0.5);
+          const p90Mem = percentile(s.memMb, 0.9);
+          const p95Mem = percentile(s.memMb, 0.95);
+          const p99Mem = percentile(s.memMb, 0.99);
+          const memStd = stddev(s.memMb, avgMem);
+          const memHigh512 = s.memMb.length ? s.memMb.filter(v => v > 512).length / s.memMb.length : null;
+          const memHigh1024 = s.memMb.length ? s.memMb.filter(v => v > 1024).length / s.memMb.length : null;
+          const memGrowth = linregSlope(s.memMb);
+          
+          return {
+            pid,
+            title: labels[pid] || `PID ${pid}`,
+            proc_type: snap?.proc_type || null,
+            avg_cpu: avgCpu, max_cpu: maxCpu, p50_cpu: p50Cpu, p90_cpu: p90Cpu, p95_cpu: p95Cpu, p99_cpu: p99Cpu,
+            cpu_stddev: cpuStd, cpu_high_30: cpuHigh30, cpu_high_60: cpuHigh60,
+            avg_mem: avgMem, max_mem: maxMem, p50_mem: p50Mem, p90_mem: p90Mem, p95_mem: p95Mem, p99_mem: p99Mem,
+            mem_stddev: memStd, mem_high_512: memHigh512, mem_high_1024: memHigh1024, mem_growth: memGrowth,
+            samples: s.cpu.length,
+          };
+        }).sort((a, b) => (b.avg_cpu || 0) - (a.avg_cpu || 0));
+
+        return {
+          chartData: data,
+          pids: Array.from(pidSet).sort((a, b) => a - b),
+          processLabels: labels,
+          perPidSummaries: summaries,
+        };
+      }, [run]);
+
+      if (loading) {
+        return <div className="p-6 text-center text-slate-500">Loading...</div>;
+      }
+
+      if (!run) {
+        return <div className="p-6 text-center text-slate-500">Run not found</div>;
+      }
+
+      const meta = run.report?.meta || {};
+      const analysis = run.report?.analysis || {};
+      const insights = analysis.insights || [];
+      const score = analysis.score;
+
+      // Prepare chart data keys
+      const cpuKeys = pids.map(pid => ({ key: `cpu_${pid}`, label: processLabels[pid] || `PID ${pid}` }));
+      const memKeys = pids.map(pid => ({ key: `mem_${pid}`, label: processLabels[pid] || `PID ${pid}` }));
+      
+      // Score color
+      const getScoreColor = (s) => {
+        if (s == null) return 'text-slate-500';
+        if (s >= 80) return 'text-emerald-600';
+        if (s >= 60) return 'text-amber-600';
+        return 'text-rose-600';
+      };
+
+      return (
+        <div className="p-6">
+          {/* Header */}
+          <div className="flex items-center gap-4 mb-6">
+            <button 
+              onClick={onBack}
+              className="p-2 hover:bg-slate-200 rounded-lg text-slate-600"
+            >
+              ← Back
+            </button>
+            <div>
+              <h1 className="text-xl font-bold text-slate-800">{run.title}</h1>
+              <div className="text-sm text-slate-500">
+                {formatDate(run.reportDate)}
+                {run.durationSeconds && <span className="ml-3">⏱ {formatDuration(run.durationSeconds)}</span>}
+              </div>
+            </div>
+          </div>
+
+          {/* Tags */}
+          <div className="flex flex-wrap gap-2 mb-6">
+            {run.release && (
+              <span className="px-3 py-1 bg-indigo-100 text-indigo-700 rounded-lg text-sm font-medium">
+                Release: {run.release}
+              </span>
+            )}
+            {run.scenario && (
+              <span className="px-3 py-1 bg-emerald-100 text-emerald-700 rounded-lg text-sm">
+                {run.scenario}
+              </span>
+            )}
+            {run.platform && (
+              <span className="px-3 py-1 bg-slate-100 text-slate-600 rounded-lg text-sm">
+                {run.platform}
+              </span>
+            )}
+            {run.mode && (
+              <span className="px-3 py-1 bg-amber-100 text-amber-700 rounded-lg text-sm">
+                {run.mode}
+              </span>
+            )}
+            {run.buildId && (
+              <span className="px-3 py-1 bg-slate-100 text-slate-600 rounded-lg text-sm">
+                Build: {run.buildId}
+              </span>
+            )}
+          </div>
+
+          {/* Metadata Section - Comprehensive */}
+          <div className="bg-white border border-slate-200 rounded-xl p-5 mb-6">
+            <div className="text-sm text-slate-500 uppercase font-bold mb-3">Metadata (for AI / reproducibility)</div>
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 text-sm">
+              {/* Collection */}
+              <div className="bg-slate-50 border border-slate-200 rounded-lg p-3">
+                <div className="text-xs text-slate-500 mb-2">Collection</div>
+                <div className="space-y-1">
+                  <div className="flex justify-between gap-3">
+                    <span className="text-slate-400">mode</span>
+                    <span className="tabular-nums">{meta.collection?.mode || '—'}</span>
+                  </div>
+                  <div className="flex justify-between gap-3">
+                    <span className="text-slate-400">interval</span>
+                    <span className="tabular-nums">{meta.collection?.interval_ms ? `${meta.collection.interval_ms}ms` : '—'}</span>
+                  </div>
+                  <div className="flex justify-between gap-3">
+                    <span className="text-slate-400">duration</span>
+                    <span className="tabular-nums">{meta.collection?.duration_seconds ? `${meta.collection.duration_seconds}s` : '—'}</span>
+                  </div>
+                  <div className="text-xs text-slate-500 mt-2">started: {meta.collection?.started_at || '—'}</div>
+                  <div className="text-xs text-slate-500">ended: {meta.collection?.ended_at || '—'}</div>
+                </div>
+              </div>
+
+              {/* Environment */}
+              <div className="bg-slate-50 border border-slate-200 rounded-lg p-3">
+                <div className="text-xs text-slate-500 mb-2">Environment</div>
+                <div className="space-y-1">
+                  <div className="flex justify-between gap-3">
+                    <span className="text-slate-400">os</span>
+                    <span className="tabular-nums">{meta.env?.os || '—'}</span>
+                  </div>
+                  <div className="flex justify-between gap-3">
+                    <span className="text-slate-400">device</span>
+                    <span className="tabular-nums truncate max-w-[150px]">{meta.env?.device_name || '—'}</span>
+                  </div>
+                  <div className="flex justify-between gap-3">
+                    <span className="text-slate-400">arch</span>
+                    <span className="tabular-nums">{meta.env?.arch || '—'}</span>
+                  </div>
+                  <div className="flex justify-between gap-3">
+                    <span className="text-slate-400">cpu</span>
+                    <span className="tabular-nums truncate max-w-[150px]" title={meta.env?.cpu_brand}>{meta.env?.cpu_brand || '—'}</span>
+                  </div>
+                  <div className="flex justify-between gap-3">
+                    <span className="text-slate-400">cpu cores</span>
+                    <span className="tabular-nums">{meta.env?.cpu_logical_cores || meta.env?.cpu_physical_cores || '—'}</span>
+                  </div>
+                  <div className="flex justify-between gap-3">
+                    <span className="text-slate-400">total RAM</span>
+                    <span className="tabular-nums">
+                      {meta.env?.total_memory_bytes ? `${Math.round(meta.env.total_memory_bytes / 1024 / 1024 / 1024)} GB` : 
+                       meta.env?.total_mem_gb ? `${meta.env.total_mem_gb} GB` : '—'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Targets */}
+              <div className="bg-slate-50 border border-slate-200 rounded-lg p-3">
+                <div className="text-xs text-slate-500 mb-2">Targets</div>
+                <div className="text-xs text-slate-600">
+                  PIDs: {(meta.collection?.target_pids || []).join(', ') || '—'}
+                </div>
+                <div className="text-xs text-slate-500 mt-2">
+                  process snapshot: {(meta.process_snapshot?.length || 0) > 0 ? `${meta.process_snapshot.length} processes` : '—'}
+                </div>
+              </div>
+            </div>
+
+            {/* Test Context */}
+            {meta.test_context && (
+              <div className="mt-4 bg-slate-50 border border-slate-200 rounded-lg p-3">
+                <div className="text-xs text-slate-500 mb-2">Test Context</div>
+                <div className="grid grid-cols-1 lg:grid-cols-4 gap-3 text-sm">
+                  <div>
+                    <div className="text-xs text-slate-500 mb-1">Scenario</div>
+                    <div>{meta.test_context.scenario_name || '—'}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-slate-500 mb-1">Build ID</div>
+                    <div className="tabular-nums">{meta.test_context.build_id || '—'}</div>
+                  </div>
+                  <div className="lg:col-span-2">
+                    <div className="text-xs text-slate-500 mb-1">Tags</div>
+                    <div>{(meta.test_context.tags || []).join(', ') || '—'}</div>
+                  </div>
+                  {meta.test_context.notes && (
+                    <div className="lg:col-span-4">
+                      <div className="text-xs text-slate-500 mb-1">Notes</div>
+                      <div className="whitespace-pre-wrap">{meta.test_context.notes}</div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Score + Per-Process Metrics */}
+          <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 mb-6">
+            {/* Score Card */}
+            <div className="bg-white border border-slate-200 p-5 rounded-xl flex flex-col items-center justify-center relative overflow-hidden">
+              <div className="text-sm text-slate-500 uppercase font-bold mb-2">Performance Score</div>
+              <div className={`text-5xl font-bold ${getScoreColor(score)}`}>
+                {score != null ? score : '—'}
+              </div>
+              <div className="absolute top-0 right-0 p-2 opacity-10 text-6xl">
+                {score >= 80 ? '✓' : '⚠'}
+              </div>
+            </div>
+
+            {/* Per-Process Metrics */}
+            <div className="lg:col-span-3 bg-white border border-slate-200 p-5 rounded-xl">
+              <div className="text-sm text-slate-500 uppercase font-bold mb-3">Per-Process Metrics (primary)</div>
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 max-h-[400px] overflow-y-auto">
+                {perPidSummaries.map((p) => (
+                  <div key={`proc_${p.pid}`} className="bg-slate-50 border border-slate-200 rounded-lg p-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="text-sm font-medium truncate" title={p.title}>{p.title}</div>
+                      <div className="text-xs text-slate-500 tabular-nums">{p.pid}</div>
+                    </div>
+                    <div className="text-xs text-slate-500 mb-3 truncate">{p.proc_type || '—'}</div>
+                    
+                    <div className="grid grid-cols-2 gap-4">
+                      {/* CPU Column */}
+                      <div>
+                        <div className="text-xs text-slate-500 font-semibold mb-2">CPU</div>
+                        <div className="text-xs space-y-1">
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">avg</span>
+                            <span className="tabular-nums">{p.avg_cpu != null ? `${p.avg_cpu.toFixed(1)}%` : '—'}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">p50</span>
+                            <span className="tabular-nums">{p.p50_cpu != null ? `${p.p50_cpu.toFixed(1)}%` : '—'}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">p90</span>
+                            <span className="tabular-nums">{p.p90_cpu != null ? `${p.p90_cpu.toFixed(1)}%` : '—'}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">p95</span>
+                            <span className="tabular-nums">{p.p95_cpu != null ? `${p.p95_cpu.toFixed(1)}%` : '—'}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">p99</span>
+                            <span className="tabular-nums">{p.p99_cpu != null ? `${p.p99_cpu.toFixed(1)}%` : '—'}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">max</span>
+                            <span className="tabular-nums">{p.max_cpu != null ? `${p.max_cpu.toFixed(1)}%` : '—'}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">stddev</span>
+                            <span className="tabular-nums">{p.cpu_stddev != null ? p.cpu_stddev.toFixed(1) : '—'}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">&gt;30%</span>
+                            <span className="tabular-nums">{p.cpu_high_30 != null ? `${(p.cpu_high_30 * 100).toFixed(0)}%` : '—'}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">&gt;60%</span>
+                            <span className="tabular-nums">{p.cpu_high_60 != null ? `${(p.cpu_high_60 * 100).toFixed(0)}%` : '—'}</span>
+                          </div>
+                        </div>
+                      </div>
+                      
+                      {/* Memory Column */}
+                      <div>
+                        <div className="text-xs text-slate-500 font-semibold mb-2">Memory</div>
+                        <div className="text-xs space-y-1">
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">avg</span>
+                            <span className="tabular-nums">{p.avg_mem != null ? `${p.avg_mem.toFixed(0)}MB` : '—'}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">p50</span>
+                            <span className="tabular-nums">{p.p50_mem != null ? `${p.p50_mem.toFixed(0)}MB` : '—'}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">p90</span>
+                            <span className="tabular-nums">{p.p90_mem != null ? `${p.p90_mem.toFixed(0)}MB` : '—'}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">p95</span>
+                            <span className="tabular-nums">{p.p95_mem != null ? `${p.p95_mem.toFixed(0)}MB` : '—'}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">p99</span>
+                            <span className="tabular-nums">{p.p99_mem != null ? `${p.p99_mem.toFixed(0)}MB` : '—'}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">max</span>
+                            <span className="tabular-nums">{p.max_mem != null ? `${p.max_mem.toFixed(0)}MB` : '—'}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">stddev</span>
+                            <span className="tabular-nums">{p.mem_stddev != null ? `${p.mem_stddev.toFixed(1)}` : '—'}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">&gt;512MB</span>
+                            <span className="tabular-nums">{p.mem_high_512 != null ? `${(p.mem_high_512 * 100).toFixed(0)}%` : '—'}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">growth</span>
+                            <span className="tabular-nums">{p.mem_growth != null ? `${p.mem_growth.toFixed(3)} MB/s` : '—'}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="text-xs text-slate-400 mt-2 text-right">samples: {p.samples}</div>
+                  </div>
+                ))}
+                {perPidSummaries.length === 0 && (
+                  <div className="text-sm text-slate-500 italic">No per-process data found.</div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Overall Stats */}
+          {analysis.summary && (
+            <div className="bg-white border border-slate-200 rounded-xl p-5 mb-6">
+              <div className="text-sm text-slate-500 uppercase font-bold mb-3">Overall (avg only)</div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div>
+                  <div className="text-xs text-slate-500">Avg CPU (total)</div>
+                  <div className="text-xl font-medium">{analysis.summary.avg_cpu?.toFixed(1) || '—'}%</div>
+                </div>
+                <div>
+                  <div className="text-xs text-slate-500">Max CPU</div>
+                  <div className="text-xl font-medium">{analysis.summary.max_cpu?.toFixed(1) || '—'}%</div>
+                </div>
+                <div>
+                  <div className="text-xs text-slate-500">Avg Memory (total)</div>
+                  <div className="text-xl font-medium">{analysis.summary.avg_mem_mb?.toFixed(0) || '—'} MB</div>
+                </div>
+                <div>
+                  <div className="text-xs text-slate-500">Max Memory</div>
+                  <div className="text-xl font-medium">{analysis.summary.max_mem_mb?.toFixed(0) || '—'} MB</div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Insights */}
+          {insights.length > 0 && (
+            <div className="bg-white border border-slate-200 rounded-xl p-5 mb-6">
+              <h3 className="font-medium text-slate-800 mb-3">Insights</h3>
+              <ul className="space-y-2">
+                {insights.map((insight, i) => (
+                  <li key={i} className="flex items-start gap-2 text-sm text-slate-600">
+                    <span className="text-amber-500">⚡</span>
+                    {insight}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* CPU Chart */}
+          {chartData.length > 0 && cpuKeys.length > 0 && (
+            <LineChartComponent
+              data={chartData}
+              dataKeys={cpuKeys}
+              title="CPU Usage (%)"
+              yLabel="CPU %"
+              formatValue={(v) => v != null ? `${v.toFixed(1)}%` : 'N/A'}
+            />
+          )}
+
+          {/* Memory Chart */}
+          {chartData.length > 0 && memKeys.length > 0 && (
+            <LineChartComponent
+              data={chartData}
+              dataKeys={memKeys}
+              title="Memory Usage (MB)"
+              yLabel="Memory (MB)"
+              formatValue={(v) => v != null ? `${v.toFixed(1)} MB` : 'N/A'}
+            />
+          )}
+
+          {/* Process Snapshot Table */}
+          {(meta.process_snapshot || []).length > 0 && (
+            <div className="bg-white border border-slate-200 rounded-xl p-5 mb-6">
+              <h3 className="font-medium text-slate-800 mb-4">Process Snapshot</h3>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-slate-200">
+                      <th className="text-left py-2 px-2 text-slate-500 font-medium">PID</th>
+                      <th className="text-left py-2 px-2 text-slate-500 font-medium">Name</th>
+                      <th className="text-left py-2 px-2 text-slate-500 font-medium">Title</th>
+                      <th className="text-left py-2 px-2 text-slate-500 font-medium">Type</th>
+                      <th className="text-left py-2 px-2 text-slate-500 font-medium">Alias</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(meta.process_snapshot || []).map((p, i) => (
+                      <tr key={i} className="border-b border-slate-100 hover:bg-slate-50">
+                        <td className="py-2 px-2 tabular-nums">{p.pid}</td>
+                        <td className="py-2 px-2">{p.name || '—'}</td>
+                        <td className="py-2 px-2 max-w-[200px] truncate" title={p.title}>{p.title || '—'}</td>
+                        <td className="py-2 px-2">{p.proc_type || '—'}</td>
+                        <td className="py-2 px-2">{p.alias || '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    function App() {
+      const [view, setView] = useState('list'); // 'list' | 'detail'
+      const [selectedRunId, setSelectedRunId] = useState(null);
+
+      const handleSelect = (id) => {
+        setSelectedRunId(id);
+        setView('detail');
+      };
+
+      const handleBack = () => {
+        setView('list');
+        setSelectedRunId(null);
+      };
+
+      return (
+        <div className="min-h-screen">
+          {/* Header */}
+          <header className="bg-white border-b border-slate-200 px-6 py-4">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center">
+                <span className="text-white font-bold text-sm">P</span>
+              </div>
+              <h1 className="text-lg font-semibold text-slate-800">PerfSight Server</h1>
+            </div>
+          </header>
+
+          {/* Content */}
+          <main className="max-w-6xl mx-auto">
+            {view === 'list' ? (
+              <RunsList onSelect={handleSelect} />
+            ) : (
+              <RunDetail runId={selectedRunId} onBack={handleBack} />
+            )}
+          </main>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>

@@ -14,6 +14,7 @@ import {
   X,
   Save,
   Activity,
+  Upload,
 } from "lucide-react";
 import { PerformanceCharts, ProcessInfo } from "../components/Charts";
 import jsPDF from "jspdf";
@@ -207,6 +208,11 @@ export const ReportDetail: React.FC = () => {
   const [isDeleting, setIsDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
+  const [serverUrl, setServerUrl] = useState(() => 
+    localStorage.getItem("perfsight_server_url") || "http://localhost:3001"
+  );
+  const [showServerConfig, setShowServerConfig] = useState(false);
   const [isRenaming, setIsRenaming] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [isSavingTitle, setIsSavingTitle] = useState(false);
@@ -810,6 +816,53 @@ export const ReportDetail: React.FC = () => {
     }
   };
 
+  const handleUpload = async () => {
+    if (!report) return;
+    try {
+      setIsUploading(true);
+      
+      // Build the dataset in the same format as export_report_dataset
+      const dataset = {
+        schema_version: 1,
+        exported_at: new Date().toISOString(),
+        report: {
+          id: report.id,
+          created_at: report.created_at,
+          title: report.title,
+          metrics: report.metrics,
+          analysis: report.analysis,
+          meta: report.meta,
+        },
+      };
+
+      const response = await fetch(`${serverUrl}/api/v1/datasets`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(dataset),
+      });
+
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.error || `Upload failed: ${response.status}`);
+      }
+
+      const result = await response.json();
+      alert(`✅ Uploaded to server!\nRun ID: ${result.run?.id}\n\nView at: ${serverUrl}`);
+    } catch (err: any) {
+      console.error("Upload failed", err);
+      alert(`Failed to upload: ${err.message || err}`);
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const handleSaveServerUrl = (url: string) => {
+    const trimmed = url.trim().replace(/\/+$/, ""); // Remove trailing slashes
+    setServerUrl(trimmed);
+    localStorage.setItem("perfsight_server_url", trimmed);
+    setShowServerConfig(false);
+  };
+
   const handleDelete = async () => {
     try {
       setIsDeleting(true);
@@ -910,8 +963,64 @@ export const ReportDetail: React.FC = () => {
             <Download className="w-4 h-4" />{" "}
             {isExporting ? "Exporting…" : "Export…"}
           </button>
+          <div className="relative">
+            <button
+              onClick={handleUpload}
+              disabled={isUploading}
+              className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white px-4 py-2 rounded-lg font-medium transition-colors"
+              title={`Upload to: ${serverUrl}`}
+            >
+              <Upload className="w-4 h-4" />{" "}
+              {isUploading ? "Uploading…" : "Upload to Server"}
+            </button>
+            <button
+              onClick={() => setShowServerConfig(true)}
+              className="absolute -right-2 -top-2 w-5 h-5 bg-slate-700 hover:bg-slate-600 text-white rounded-full text-xs flex items-center justify-center"
+              title="Configure server URL"
+            >
+              ⚙
+            </button>
+          </div>
         </div>
       </div>
+
+      {/* Server URL Config Modal */}
+      {showServerConfig && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="bg-white dark:bg-slate-900 rounded-xl p-6 w-[400px] shadow-2xl">
+            <h3 className="text-lg font-semibold mb-4">PerfSight Server URL</h3>
+            <input
+              type="text"
+              defaultValue={serverUrl}
+              className="w-full px-3 py-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100"
+              placeholder="http://localhost:3001"
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  handleSaveServerUrl((e.target as HTMLInputElement).value);
+                }
+              }}
+              id="server-url-input"
+            />
+            <div className="flex justify-end gap-2 mt-4">
+              <button
+                onClick={() => setShowServerConfig(false)}
+                className="px-4 py-2 text-sm text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  const input = document.getElementById("server-url-input") as HTMLInputElement;
+                  handleSaveServerUrl(input?.value || serverUrl);
+                }}
+                className="px-4 py-2 text-sm bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg"
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div id="report-content" className="flex-1 overflow-y-auto p-4">
         {confirmDelete && (

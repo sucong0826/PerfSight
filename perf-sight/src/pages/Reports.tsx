@@ -138,7 +138,7 @@ export const Reports: React.FC = () => {
     e.stopPropagation();
     const next = new Set(selectedIds);
     if (next.has(id)) next.delete(id);
-    else if (next.size < 6) next.add(id);
+    else next.add(id);
     setSelectedIds(next);
   };
 
