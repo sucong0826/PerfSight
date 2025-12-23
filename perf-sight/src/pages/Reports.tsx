@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { buildReportPdfDataUri } from "../utils/bulkExport";
 import {
   FileText,
@@ -49,6 +49,8 @@ type FolderNode = {
   children: FolderNode[];
 };
 
+const REPORTS_UI_STATE_KEY = "perfsight.ui.reports.v1";
+
 const normFolder = (raw: any) => {
   const s = String(raw ?? "").trim();
   if (!s) return "";
@@ -61,6 +63,7 @@ const normFolder = (raw: any) => {
 
 export const Reports: React.FC = () => {
   const navigate = useNavigate();
+  const location = useLocation();
 
   const [reports, setReports] = useState<ReportSummary[]>([]);
   const [folders, setFolders] = useState<FolderInfo[]>([]);
@@ -101,6 +104,143 @@ export const Reports: React.FC = () => {
 
   const viewMode: "folder" | "tags" = filterTags.size > 0 ? "tags" : "folder";
 
+  const expandPathAndParents = (rawPath: string) => {
+    const p = normFolder(rawPath);
+    if (!p) return [] as string[];
+    const parts = p.split("/").filter(Boolean);
+    const out: string[] = [];
+    for (let i = 1; i <= parts.length; i++) {
+      out.push(parts.slice(0, i).join("/"));
+    }
+    return out;
+  };
+
+  const readRestorableState = (): any | null => {
+    // Prefer history state (best for back/forward navigation).
+    const fromHistory = (location.state as any)?.reportsUiState;
+    if (fromHistory && typeof fromHistory === "object") return fromHistory;
+
+    // Fallback to sessionStorage.
+    try {
+      const raw = sessionStorage.getItem(REPORTS_UI_STATE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") return parsed;
+    } catch {
+      // ignore
+    }
+    return null;
+  };
+
+  const applyRestorableState = (parsed: any) => {
+    if (!parsed || typeof parsed !== "object") return;
+    if (typeof parsed.selectedFolder === "string") {
+      setSelectedFolder(normFolder(parsed.selectedFolder));
+    }
+    if (Array.isArray(parsed.expanded)) {
+      const next = new Set<string>(
+        parsed.expanded.map((p: any) => normFolder(p)).filter(Boolean)
+      );
+      next.add("");
+      setExpanded(next);
+    }
+    if (typeof parsed.includeSubfolders === "boolean") {
+      setIncludeSubfolders(parsed.includeSubfolders);
+    }
+    if (Array.isArray(parsed.filterTags)) {
+      const tags = parsed.filterTags
+        .map((t: any) => String(t))
+        .map((t: string) => t.trim())
+        .filter(Boolean);
+      setFilterTags(new Set(tags));
+    }
+    if (parsed.tagMatchMode === "any" || parsed.tagMatchMode === "all") {
+      setTagMatchMode(parsed.tagMatchMode);
+    }
+    if (Array.isArray(parsed.selectedIds)) {
+      const ids = parsed.selectedIds
+        .map((x: any) => Number(x))
+        .filter((x: number) => Number.isFinite(x));
+      setSelectedIds(new Set(ids));
+    }
+  };
+
+  // Restore UI state (folder selection, expanded tree, tag filters, selection) on mount.
+  useEffect(() => {
+    const s = readRestorableState();
+    if (s) applyRestorableState(s);
+    // Only run once on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Persist UI state. (Don't persist modals / confirm dialogs.)
+  useEffect(() => {
+    try {
+      const state = {
+        selectedFolder,
+        expanded: Array.from(expanded.values()),
+        includeSubfolders,
+        filterTags: Array.from(filterTags.values()),
+        tagMatchMode,
+        selectedIds: Array.from(selectedIds.values()),
+      };
+      sessionStorage.setItem(REPORTS_UI_STATE_KEY, JSON.stringify(state));
+
+      // Also persist into router history state so "back" restores perfectly.
+      const curState = (location.state as any) || {};
+      // Avoid spamming history updates if state is unchanged (cheap structural check).
+      const prev = curState.reportsUiState;
+      const same =
+        prev &&
+        prev.selectedFolder === state.selectedFolder &&
+        JSON.stringify(prev.expanded || []) === JSON.stringify(state.expanded) &&
+        prev.includeSubfolders === state.includeSubfolders &&
+        prev.tagMatchMode === state.tagMatchMode &&
+        JSON.stringify(prev.filterTags || []) === JSON.stringify(state.filterTags) &&
+        JSON.stringify(prev.selectedIds || []) === JSON.stringify(state.selectedIds);
+      if (!same) {
+        navigate(location.pathname, {
+          replace: true,
+          state: { ...curState, reportsUiState: state },
+        });
+      }
+    } catch {
+      // ignore storage write issues
+    }
+  }, [
+    selectedFolder,
+    expanded,
+    includeSubfolders,
+    filterTags,
+    tagMatchMode,
+    selectedIds,
+    navigate,
+    location.pathname,
+    location.state,
+  ]);
+
+  // UX guard: whenever a folder is selected, ensure it is expanded (including its parents),
+  // so returning from a report doesn't "collapse" the working context.
+  useEffect(() => {
+    if (!selectedFolder) return;
+    const toExpand = expandPathAndParents(selectedFolder);
+    if (!toExpand.length) return;
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      let changed = false;
+      for (const p of toExpand) {
+        if (!next.has(p)) {
+          next.add(p);
+          changed = true;
+        }
+      }
+      next.add("");
+      return changed ? next : prev;
+    });
+    // Only respond to folder changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedFolder]);
+
   const loadReports = async () => {
     const data = (await invoke("get_reports")) as any;
     setReports(data || []);
@@ -134,6 +274,17 @@ export const Reports: React.FC = () => {
     })();
   }, []);
 
+  // If reports list changes (e.g., delete/import), drop any selected IDs that no longer exist.
+  useEffect(() => {
+    if (!selectedIds.size) return;
+    const existing = new Set(reports.map((r) => r.id));
+    const next = new Set<number>();
+    for (const id of selectedIds) {
+      if (existing.has(id)) next.add(id);
+    }
+    if (next.size !== selectedIds.size) setSelectedIds(next);
+  }, [reports, selectedIds]);
+
   const toggleSelect = (id: number, e: React.MouseEvent) => {
     e.stopPropagation();
     const next = new Set(selectedIds);
@@ -142,9 +293,22 @@ export const Reports: React.FC = () => {
     setSelectedIds(next);
   };
 
-  const handleCompare = () => {
+  const handleCreateComparison = async () => {
     if (selectedIds.size < 2) return;
-    navigate(`/compare?ids=${Array.from(selectedIds).join(",")}`);
+    const ids = Array.from(selectedIds);
+    const title = `Comparison (${ids.length})`;
+    const comparisonId = (await invoke("create_comparison", {
+      args: {
+        title,
+        reportIds: ids,
+        folderPath: "",
+        baselineReportId: ids[0],
+        cpuSelectionsById: null,
+        memSelectionsById: null,
+        meta: { tags: [] },
+      },
+    } as any)) as number;
+    navigate(`/comparison/${comparisonId}`, { state: { fromReports: true } });
   };
 
   const confirmDeleteSelected = () => {
@@ -240,6 +404,38 @@ export const Reports: React.FC = () => {
       return fp === folder;
     });
   }, [reports, selectedFolder, includeSubfolders, filterTags, tagMatchMode]);
+
+  const viewReportIds = useMemo(() => {
+    return folderFilteredReports.map((r) => r.id);
+  }, [folderFilteredReports]);
+
+  const selectedCountInView = useMemo(() => {
+    if (!viewReportIds.length) return 0;
+    let c = 0;
+    for (const id of viewReportIds) {
+      if (selectedIds.has(id)) c++;
+    }
+    return c;
+  }, [viewReportIds, selectedIds]);
+
+  const isAllInViewSelected = useMemo(() => {
+    return viewReportIds.length > 0 && selectedCountInView === viewReportIds.length;
+  }, [viewReportIds.length, selectedCountInView]);
+
+  const toggleSelectAllInView = () => {
+    if (!viewReportIds.length) return;
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (isAllInViewSelected) {
+        // Deselect only items in current view.
+        for (const id of viewReportIds) next.delete(id);
+      } else {
+        // Select all items in current view (keep any existing selection outside view).
+        for (const id of viewReportIds) next.add(id);
+      }
+      return next;
+    });
+  };
 
   const treeReports = useMemo(() => {
     // Tree should reflect current tag filter (so users can still navigate),
@@ -394,7 +590,7 @@ export const Reports: React.FC = () => {
                   }}
                   onClick={(e) => {
                     e.stopPropagation();
-                    navigate(`/report/${r.id}`);
+                    navigate(`/report/${r.id}`, { state: { fromReports: true } });
                   }}
                   className={`w-full text-left px-2 py-1 rounded-md flex items-center gap-2 transition-colors ${
                     isRowSelected
@@ -533,6 +729,30 @@ export const Reports: React.FC = () => {
                   />
                   include subfolders
                 </label>
+                <label
+                  className={`text-xs flex items-center gap-2 select-none ${
+                    viewReportIds.length === 0
+                      ? "text-slate-400"
+                      : "text-slate-600 dark:text-slate-300"
+                  }`}
+                  title="Select all reports in the current view (folder + tag filters)"
+                >
+                  <input
+                    type="checkbox"
+                    checked={isAllInViewSelected}
+                    ref={(el) => {
+                      if (!el) return;
+                      el.indeterminate =
+                        selectedCountInView > 0 && !isAllInViewSelected;
+                    }}
+                    disabled={viewReportIds.length === 0}
+                    onChange={() => toggleSelectAllInView()}
+                  />
+                  Select all
+                  <span className="tabular-nums text-slate-400">
+                    ({selectedCountInView}/{viewReportIds.length})
+                  </span>
+                </label>
               </div>
 
               <div className="flex items-center gap-3">
@@ -559,6 +779,7 @@ export const Reports: React.FC = () => {
                             bundleJson: text,
                           })) as {
                             imported_ids: number[];
+                            comparison_id?: number;
                             comparison: {
                               baseline_id: number | null;
                               cpu_selections_by_id: Record<string, number[]>;
@@ -568,8 +789,13 @@ export const Reports: React.FC = () => {
                           await loadReports();
                           await loadFolders();
                           
-                          // Navigate to compare view with the imported IDs
-                          if (result.imported_ids && result.imported_ids.length >= 2) {
+                          // Navigate to Comparison artifact
+                          if (result.comparison_id) {
+                            navigate(`/comparison/${result.comparison_id}`, {
+                              state: { fromReports: true },
+                            });
+                          } else if (result.imported_ids && result.imported_ids.length >= 2) {
+                            // fallback (legacy)
                             const ids = result.imported_ids.join(",");
                             navigate(`/compare?ids=${ids}`);
                           }
@@ -580,7 +806,7 @@ export const Reports: React.FC = () => {
                           })) as number;
                           await loadReports();
                           await loadFolders();
-                          navigate(`/report/${newId}`);
+                          navigate(`/report/${newId}`, { state: { fromReports: true } });
                         } else {
                           throw new Error("Invalid format: expected dataset or comparison bundle");
                         }
@@ -718,11 +944,12 @@ export const Reports: React.FC = () => {
                   {isExportingBundle ? "Exporting…" : "Export…"}
                 </button>
                 <button
-                  onClick={handleCompare}
+                  onClick={handleCreateComparison}
                   disabled={selectedIds.size < 2}
                   className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white px-3 py-1.5 rounded-md text-sm font-medium flex items-center gap-2 transition-colors"
+                  title="Create a Comparison artifact from selected reports"
                 >
-                  <GitCompare className="w-4 h-4" /> Compare
+                  <GitCompare className="w-4 h-4" /> Create Comparison
                 </button>
                 <button
                   onClick={confirmDeleteSelected}
@@ -772,7 +999,11 @@ export const Reports: React.FC = () => {
                 return (
                   <div
                     key={report.id}
-                    onClick={() => navigate(`/report/${report.id}`)}
+                    onClick={() =>
+                      navigate(`/report/${report.id}`, {
+                        state: { fromReports: true },
+                      })
+                    }
                     draggable
                     onDragStart={(e) => {
                       const ids = isSelected ? Array.from(selectedIds) : [report.id];

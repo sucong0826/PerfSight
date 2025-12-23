@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { useParams, Link, useNavigate } from "react-router-dom";
+import { useParams, Link, useLocation, useNavigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import {
   ArrowLeft,
@@ -197,6 +197,10 @@ const MetricLabel: React.FC<{ label: string; tip?: string }> = ({
 export const ReportDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
+  const focusPid = (location.state as any)?.focusPid as number | undefined;
+  const focusMetric = (location.state as any)?.focusMetric as ("cpu" | "mem") | undefined;
+  const [highlightPid, setHighlightPid] = useState<number | null>(null);
   const [report, setReport] = useState<ReportDetailData | null>(null);
   const [chartData, setChartData] = useState<any[]>([]);
   const [processes, setProcesses] = useState<ProcessInfo[]>([]);
@@ -227,6 +231,26 @@ export const ReportDetail: React.FC = () => {
       })
       .catch(console.error);
   }, [id]);
+
+  // Auto-scroll & highlight when coming from Comparison drivers.
+  useEffect(() => {
+    if (!report) return;
+    if (typeof focusPid !== "number" || !Number.isFinite(focusPid)) return;
+
+    // Note: focusMetric is informational for now; we still scroll to the primary PID card.
+    void focusMetric;
+
+    const targetId = `pid-card-${focusPid}`;
+    const t = window.setTimeout(() => {
+      const el = document.getElementById(targetId);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        setHighlightPid(focusPid);
+        window.setTimeout(() => setHighlightPid(null), 2400);
+      }
+    }, 300);
+    return () => window.clearTimeout(t);
+  }, [report, focusPid, focusMetric]);
 
   const handleSaveTitle = async () => {
     if (!report) return;
@@ -874,16 +898,32 @@ export const ReportDetail: React.FC = () => {
     }
   };
 
+  const handleBack = () => {
+    const fromReports = Boolean((location.state as any)?.fromReports);
+    const fromComparisonId = (location.state as any)?.fromComparisonId;
+    if (typeof fromComparisonId === "number" && Number.isFinite(fromComparisonId)) {
+      navigate(`/comparison/${fromComparisonId}`, { state: { fromReports: false } });
+      return;
+    }
+    if (fromReports) {
+      navigate(-1);
+      return;
+    }
+    navigate("/reports");
+  };
+
   return (
     <div className="p-8 h-screen flex flex-col bg-slate-50 text-slate-900 overflow-hidden dark:bg-slate-950 dark:text-slate-200">
       <div className="flex items-center justify-between mb-6 shrink-0">
         <div className="flex items-center gap-4">
-          <Link
-            to="/reports"
+          <button
+            type="button"
+            onClick={handleBack}
             className="p-2 hover:bg-slate-100 rounded-lg text-slate-500 dark:hover:bg-slate-900 dark:text-slate-400"
+            title="Back"
           >
             <ArrowLeft className="w-5 h-5" />
-          </Link>
+          </button>
           <div className="min-w-0">
             {!isRenaming ? (
               <div className="flex items-center gap-2 min-w-0">
@@ -1248,7 +1288,12 @@ export const ReportDetail: React.FC = () => {
                 {perPidSummaries.map((p) => (
                   <div
                     key={`proc_${p.pid}`}
-                    className="bg-slate-50 border border-slate-200 rounded-lg p-4 dark:bg-slate-950/50 dark:border-slate-800"
+                    id={`pid-card-${p.pid}`}
+                    className={`bg-slate-50 border border-slate-200 rounded-lg p-4 dark:bg-slate-950/50 dark:border-slate-800 transition-all ${
+                      highlightPid === p.pid
+                        ? "ring-2 ring-indigo-500 border-indigo-500/40 bg-indigo-600/5 dark:bg-indigo-900/15"
+                        : ""
+                    }`}
                   >
                     <div className="flex items-center justify-between mb-2">
                       <div

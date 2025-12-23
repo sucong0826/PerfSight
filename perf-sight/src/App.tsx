@@ -1,10 +1,12 @@
 import { useState } from "react";
 import { Routes, Route, Link, useLocation } from 'react-router-dom';
-import { LayoutDashboard, FileText, Sun, Moon, Info, X, Github, ExternalLink } from "lucide-react";
+import { LayoutDashboard, FileText, GitCompare, Sun, Moon, Info, X, Github, ExternalLink } from "lucide-react";
 import { Dashboard } from "./pages/Dashboard";
 import { Reports } from "./pages/Reports";
 import { ReportDetail } from "./pages/ReportDetail";
 import { ReportCompare } from "./pages/ReportCompare";
+import { Comparisons } from "./pages/Comparisons";
+import { ComparisonDetail } from "./pages/ComparisonDetail";
 import { RetestPreview } from "./pages/RetestPreview";
 import { FloatingWidget } from "./pages/FloatingWidget";
 import { useTheme } from "./theme";
@@ -73,6 +75,7 @@ export default function App() {
         <nav className="flex-1 p-4 space-y-2">
           <NavLink to="/" icon={LayoutDashboard} label="Dashboard" />
           <NavLink to="/reports" icon={FileText} label="Reports" />
+          <NavLink to="/comparisons" icon={GitCompare} label="Comparisons" />
         </nav>
 
         {/* About button at bottom */}
@@ -174,6 +177,8 @@ export default function App() {
           <Route path="/report/:id" element={<ReportDetail />} />
           <Route path="/retest/:id" element={<RetestPreview />} />
           <Route path="/compare" element={<ReportCompare />} />
+          <Route path="/comparisons" element={<Comparisons />} />
+          <Route path="/comparison/:id" element={<ComparisonDetail />} />
           <Route path="/widget" element={<FloatingWidget />} />
         </Routes>
       </div>

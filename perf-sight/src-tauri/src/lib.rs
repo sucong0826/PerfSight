@@ -62,7 +62,25 @@ pub fn run() {
             commands::export_report_dataset,
             commands::export_reports_bundle_zip,
             commands::import_report_dataset,
-            commands::import_comparison_bundle
+            commands::import_comparison_bundle,
+            // Comparisons
+            commands::create_comparison,
+            commands::get_comparisons,
+            commands::get_comparison_detail,
+            commands::delete_comparison,
+            commands::delete_comparisons,
+            commands::update_comparison_title,
+            commands::update_comparison_config,
+            commands::update_comparison_folder_path,
+            commands::update_comparisons_folder_path,
+            commands::list_comparison_folder_paths,
+            commands::create_comparison_folder,
+            commands::get_comparison_folder_stats,
+            commands::rename_comparison_folder,
+            commands::delete_comparison_folder,
+            commands::export_comparison_bundle_json,
+            commands::update_comparison_meta,
+            commands::update_comparison_reports
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

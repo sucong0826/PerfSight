@@ -1,23 +1,47 @@
 use std::net::TcpListener;
 use std::thread;
 use tungstenite::accept;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager, State, Emitter};
 use crate::commands::{CollectionState, process_websocket_metric_payload, push_custom_metric, safe_lock};
 use serde_json::Value;
 use chrono::{Utc, TimeZone};
 
+fn bind_ws_listener_with_fallback() -> Option<(TcpListener, u16)> {
+    // Prefer 23333, but if busy, try a small range (dev-friendly).
+    // This avoids flaky `tauri dev` on Windows when a previous instance still holds the port.
+    let base: u16 = 23333;
+    let max_tries: u16 = 30;
+    for i in 0..max_tries {
+        let port = base + i;
+        let addr = format!("127.0.0.1:{}", port);
+        match TcpListener::bind(&addr) {
+            Ok(l) => return Some((l, port)),
+            Err(e) => {
+                if e.kind() == std::io::ErrorKind::AddrInUse {
+                    continue;
+                }
+                eprintln!("Failed to bind WebSocket server on {}: {}", addr, e);
+                return None;
+            }
+        }
+    }
+    None
+}
+
 pub fn start_server(app_handle: AppHandle) {
     thread::spawn(move || {
-        // Listen on localhost only for security
-        let listener = match TcpListener::bind("127.0.0.1:23333") {
-            Ok(l) => l,
-            Err(e) => {
-                eprintln!("Failed to bind WebSocket server: {}", e);
+        // Listen on localhost only for security.
+        // Dev-friendly: if 23333 is busy, fall back to 23334/23335... and print the actual port.
+        let (listener, port) = match bind_ws_listener_with_fallback() {
+            Some(x) => x,
+            None => {
+                eprintln!("Failed to bind WebSocket server on 127.0.0.1:23333..");
                 return;
             }
         };
-        
-        println!("WebSocket Server listening on 127.0.0.1:23333");
+
+        println!("WebSocket Server listening on 127.0.0.1:{}", port);
+        let _ = app_handle.emit("ws-server-port", port);
         
         for stream in listener.incoming() {
             if let Ok(stream) = stream {

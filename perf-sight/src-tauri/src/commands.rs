@@ -6,7 +6,17 @@ use tauri_plugin_shell::ShellExt;
 use tauri_plugin_shell::process::{CommandEvent, CommandChild};
 use crate::models::{CollectionConfig, ProcessInfo, BatchMetric, MetricPoint, ProcessAlias, LogMetricConfig};
 use crate::collector::create_collector;
-use crate::database::{Database, ReportSummary, ReportDetail, TagStat, FolderInfo, FolderStats};
+use crate::database::{
+    Database,
+    ReportSummary,
+    ReportDetail,
+    TagStat,
+    FolderInfo,
+    FolderStats,
+    ComparisonSummary,
+    ComparisonDetail,
+    ComparisonFolderStats,
+};
 use chrono::{DateTime, Utc, TimeZone};
 use serde_json::json;
 use serde_json::Value;
@@ -174,6 +184,15 @@ pub struct ReportDatasetV1 {
     pub schema_version: u32,
     pub exported_at: String,
     pub report: ReportDetail,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ComparisonBundleV1 {
+    pub schema_version: u32,
+    pub bundle_type: String, // "comparison"
+    pub exported_at: String,
+    pub comparison_context: Value,
+    pub reports: Vec<ReportDetail>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -408,15 +427,309 @@ pub fn import_comparison_bundle(
     let cpu_selections = map_selections(comparison_context.get("cpu_selections_by_id"));
     let mem_selections = map_selections(comparison_context.get("mem_selections_by_id"));
 
+    // Create a Comparison record from imported reports + mapped context.
+    let title = v.get("title").and_then(|x| x.as_str()).unwrap_or("Imported Comparison");
+    let folder_path = v.get("folder_path").and_then(|x| x.as_str()).unwrap_or("");
+    let meta = v.get("meta").cloned().unwrap_or_else(|| serde_json::json!({}));
+    let comparison_id = db
+        .create_comparison(
+            title,
+            &imported_ids,
+            folder_path,
+            baseline_new_id,
+            &cpu_selections,
+            &mem_selections,
+            &meta,
+        )
+        .map_err(|e| e.to_string())?;
+
     Ok(serde_json::json!({
         "imported_ids": imported_ids,
         "id_mapping": id_mapping,
+        "comparison_id": comparison_id,
         "comparison": {
             "baseline_id": baseline_new_id,
             "cpu_selections_by_id": cpu_selections,
             "mem_selections_by_id": mem_selections,
         }
     }))
+}
+
+// ============================
+// Comparisons (separate artifact)
+// ============================
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateComparisonArgs {
+    pub title: Option<String>,
+    pub report_ids: Vec<i64>,
+    pub folder_path: Option<String>,
+    pub baseline_report_id: Option<i64>,
+    pub cpu_selections_by_id: Option<Value>,
+    pub mem_selections_by_id: Option<Value>,
+    pub meta: Option<Value>,
+}
+
+#[tauri::command]
+pub fn create_comparison(
+    db: State<'_, Database>,
+    args: CreateComparisonArgs,
+) -> Result<i64, String> {
+    if args.report_ids.len() < 2 {
+        return Err("Comparison requires at least 2 reports".to_string());
+    }
+    let title = args
+        .title
+        .unwrap_or_else(|| format!("Comparison ({})", args.report_ids.len()));
+    let folder_path = args.folder_path.unwrap_or_else(|| "".to_string());
+    let cpu = args
+        .cpu_selections_by_id
+        .unwrap_or(Value::Object(serde_json::Map::new()));
+    let mem = args
+        .mem_selections_by_id
+        .unwrap_or(Value::Object(serde_json::Map::new()));
+    let meta = args.meta.unwrap_or_else(|| serde_json::json!({}));
+    db.create_comparison(
+        &title,
+        &args.report_ids,
+        &folder_path,
+        args.baseline_report_id,
+        &cpu,
+        &mem,
+        &meta,
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_comparisons(db: State<'_, Database>) -> Result<Vec<ComparisonSummary>, String> {
+    db.get_all_comparisons().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_comparison_detail(
+    db: State<'_, Database>,
+    id: i64,
+) -> Result<ComparisonDetail, String> {
+    db.get_comparison_detail(id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_comparison(db: State<'_, Database>, id: i64) -> Result<usize, String> {
+    db.delete_comparison(id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_comparisons(db: State<'_, Database>, ids: Vec<i64>) -> Result<usize, String> {
+    db.delete_comparisons(&ids).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn update_comparison_title(
+    db: State<'_, Database>,
+    id: i64,
+    title: String,
+) -> Result<usize, String> {
+    db.update_comparison_title(id, &title).map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateComparisonConfigArgs {
+    pub id: i64,
+    pub baseline_report_id: Option<i64>,
+    pub cpu_selections_by_id: Value,
+    pub mem_selections_by_id: Value,
+}
+
+#[tauri::command]
+pub fn update_comparison_config(
+    db: State<'_, Database>,
+    args: UpdateComparisonConfigArgs,
+) -> Result<usize, String> {
+    db.update_comparison_config(
+        args.id,
+        args.baseline_report_id,
+        &args.cpu_selections_by_id,
+        &args.mem_selections_by_id,
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn update_comparison_folder_path(
+    db: State<'_, Database>,
+    id: i64,
+    folder_path: String,
+) -> Result<usize, String> {
+    db.update_comparison_folder_path(id, &folder_path)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn update_comparisons_folder_path(
+    db: State<'_, Database>,
+    ids: Vec<i64>,
+    folder_path: String,
+) -> Result<usize, String> {
+    db.update_comparisons_folder_path(&ids, &folder_path)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_comparison_folder_paths(db: State<'_, Database>) -> Result<Vec<FolderInfo>, String> {
+    db.list_comparison_folder_paths().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn create_comparison_folder(
+    db: State<'_, Database>,
+    parent_path: String,
+    name: String,
+) -> Result<String, String> {
+    db.create_comparison_folder(&parent_path, &name)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_comparison_folder_stats(
+    db: State<'_, Database>,
+    path: String,
+) -> Result<ComparisonFolderStats, String> {
+    db.get_comparison_folder_stats(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn rename_comparison_folder(
+    db: State<'_, Database>,
+    path: String,
+    new_name: String,
+) -> Result<String, String> {
+    db.rename_comparison_folder(&path, &new_name)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_comparison_folder(
+    db: State<'_, Database>,
+    path: String,
+    strategy: Option<String>,
+) -> Result<Value, String> {
+    let (moved_comparisons, moved_folders) = db
+        .delete_comparison_folder(&path, strategy.as_deref())
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({
+        "moved_comparisons": moved_comparisons,
+        "moved_folders": moved_folders
+    }))
+}
+
+#[tauri::command]
+pub fn export_comparison_bundle_json(
+    app_handle: AppHandle,
+    db: State<'_, Database>,
+    comparison_id: i64,
+    filename: Option<String>,
+) -> Result<String, String> {
+    let cmp = db.get_comparison_detail(comparison_id).map_err(|e| e.to_string())?;
+    if cmp.report_ids.len() < 2 {
+        return Err("Comparison must contain at least 2 reports".to_string());
+    }
+
+    // Load reports in full (ReportDetail)
+    let mut reports: Vec<ReportDetail> = Vec::new();
+    for rid in &cmp.report_ids {
+        reports.push(db.get_report_detail(*rid).map_err(|e| e.to_string())?);
+    }
+
+    let comparison_context = serde_json::json!({
+        "baseline_report_id": cmp.baseline_report_id,
+        "cpu_selections_by_id": cmp.cpu_selections_by_id,
+        "mem_selections_by_id": cmp.mem_selections_by_id,
+        "title": cmp.title,
+        "folder_path": cmp.folder_path,
+        "tags": cmp.tags,
+    });
+
+    let bundle = serde_json::json!({
+        "schema_version": 1,
+        "bundle_type": "comparison",
+        "exported_at": Utc::now().to_rfc3339(),
+        "comparison_context": comparison_context,
+        "reports": reports,
+        "title": cmp.title,
+        "folder_path": cmp.folder_path,
+        "meta": cmp.meta
+    });
+
+    let json_str = serde_json::to_string_pretty(&bundle).map_err(|e| e.to_string())?;
+
+    let mut dir = app_handle.path().resolve("", BaseDirectory::Download).ok();
+    if dir.is_none() {
+        dir = app_handle.path().app_local_data_dir().ok();
+    }
+    let dir = dir.ok_or("Failed to resolve output directory")?;
+    if !dir.exists() {
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    }
+
+    let name = filename
+        .and_then(|s| {
+            let t = s.trim().to_string();
+            if t.is_empty() { None } else { Some(t) }
+        })
+        .unwrap_or_else(|| format!("PerfSight_Comparison_{}_Bundle.json", comparison_id));
+    let path = dir.join(name);
+    std::fs::write(&path, json_str.as_bytes()).map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateComparisonReportsArgs {
+    pub id: i64,
+    pub report_ids: Vec<i64>,
+    pub baseline_report_id: Option<i64>,
+}
+
+#[tauri::command]
+pub fn update_comparison_reports(
+    db: State<'_, Database>,
+    args: UpdateComparisonReportsArgs,
+) -> Result<usize, String> {
+    if args.report_ids.len() < 2 {
+        return Err("Comparison requires at least 2 reports".to_string());
+    }
+    let mut ids = args.report_ids.clone();
+    ids.sort();
+    ids.dedup();
+    db.update_comparison_report_ids(args.id, &ids)
+        .map_err(|e| e.to_string())?;
+
+    // Optionally update baseline (e.g., if user picks a new baseline for the new report set)
+    if let Some(baseline_id) = args.baseline_report_id {
+        let cpu = serde_json::json!({});
+        let mem = serde_json::json!({});
+        let _ = db.update_comparison_config(args.id, Some(baseline_id), &cpu, &mem);
+    }
+    Ok(ids.len())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateComparisonMetaArgs {
+    pub id: i64,
+    pub meta: Value,
+}
+
+#[tauri::command]
+pub fn update_comparison_meta(
+    db: State<'_, Database>,
+    args: UpdateComparisonMetaArgs,
+) -> Result<usize, String> {
+    db.update_comparison_meta_patch(args.id, &args.meta)
+        .map_err(|e| e.to_string())
 }
 
 // Helper to push a custom metric derived from logs
