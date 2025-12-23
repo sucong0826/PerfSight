@@ -550,15 +550,43 @@ export const Reports: React.FC = () => {
                       try {
                         setIsImporting(true);
                         const text = await file.text();
-                        const newId = (await invoke("import_report_dataset", {
-                          datasetJson: text,
-                        })) as number;
-                        await loadReports();
-                        await loadFolders();
-                        navigate(`/report/${newId}`);
+                        const data = JSON.parse(text);
+                        
+                        // Check if it's a comparison bundle
+                        if (data.bundle_type === "comparison" && Array.isArray(data.reports)) {
+                          // Import as bundle
+                          const result = (await invoke("import_comparison_bundle", {
+                            bundleJson: text,
+                          })) as {
+                            imported_ids: number[];
+                            comparison: {
+                              baseline_id: number | null;
+                              cpu_selections_by_id: Record<string, number[]>;
+                              mem_selections_by_id: Record<string, number[]>;
+                            };
+                          };
+                          await loadReports();
+                          await loadFolders();
+                          
+                          // Navigate to compare view with the imported IDs
+                          if (result.imported_ids && result.imported_ids.length >= 2) {
+                            const ids = result.imported_ids.join(",");
+                            navigate(`/compare?ids=${ids}`);
+                          }
+                        } else if (data.schema_version === 1 && data.report) {
+                          // Single dataset import
+                          const newId = (await invoke("import_report_dataset", {
+                            datasetJson: text,
+                          })) as number;
+                          await loadReports();
+                          await loadFolders();
+                          navigate(`/report/${newId}`);
+                        } else {
+                          throw new Error("Invalid format: expected dataset or comparison bundle");
+                        }
                       } catch (err) {
-                        console.error("Import dataset failed", err);
-                        alert("Failed to import dataset");
+                        console.error("Import failed", err);
+                        alert("Failed to import: " + (err as any)?.message || err);
                       } finally {
                         setIsImporting(false);
                       }

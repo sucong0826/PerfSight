@@ -101,6 +101,7 @@ export const ReportCompare: React.FC = () => {
   const [cpuSelById, setCpuSelById] = useState<Record<number, number[]>>({});
   const [memSelById, setMemSelById] = useState<Record<number, number[]>>({});
   const [isExporting, setIsExporting] = useState(false);
+  const [isExportingBundle, setIsExportingBundle] = useState(false);
 
   const maxCompare = 6;
 
@@ -395,7 +396,7 @@ export const ReportCompare: React.FC = () => {
         samples_cpu: cpuVals.length,
         samples_mem: memMb.length,
       };
-    }
+        }
     return out;
   }, [reports, alignedData]);
 
@@ -552,7 +553,7 @@ export const ReportCompare: React.FC = () => {
       }
     };
 
-    return (
+  return (
       <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
         <div className="flex items-center justify-between gap-3 mb-3">
           <div className="text-sm font-medium min-w-0">
@@ -564,7 +565,7 @@ export const ReportCompare: React.FC = () => {
             <span className="ml-2 text-xs text-slate-500">
               ({selectedCount}/{items.length})
             </span>
-          </div>
+        </div>
           <div className="flex items-center gap-2 shrink-0">
             <button
               type="button"
@@ -631,7 +632,7 @@ export const ReportCompare: React.FC = () => {
     return (
       <div className="flex h-full items-center justify-center text-slate-500">
         <Loader className="animate-spin w-6 h-6 mr-2" /> Comparing...
-      </div>
+            </div>
     );
   if (error || reports.length < 2)
     return (
@@ -680,6 +681,7 @@ export const ReportCompare: React.FC = () => {
           <h1 className="text-xl font-bold flex items-center gap-2">
             <GitCompare className="w-5 h-5" /> Comparison
           </h1>
+          <div className="flex items-center gap-2">
           <button
             type="button"
             disabled={isExporting}
@@ -930,9 +932,59 @@ export const ReportCompare: React.FC = () => {
           >
             <Download className="w-4 h-4" /> {isExporting ? "Exporting…" : "Export PDF"}
           </button>
-        </div>
-      </div>
+          <button
+            type="button"
+            disabled={isExportingBundle}
+            onClick={async () => {
+              try {
+                setIsExportingBundle(true);
+                
+                // Build comparison bundle
+                const bundle = {
+                  schema_version: 1,
+                  bundle_type: "comparison",
+                  exported_at: new Date().toISOString(),
+                  comparison_context: {
+                    baseline_original_id: baselineId,
+                    cpu_selections_by_id: cpuSelById,
+                    mem_selections_by_id: memSelById,
+                  },
+                  reports: reports.map((r) => ({
+                    id: r.id,
+                    created_at: r.created_at,
+                    title: r.title,
+                    metrics: r.metrics,
+                    analysis: r.analysis,
+                    meta: r.meta,
+                  })),
+                };
 
+                const json = JSON.stringify(bundle, null, 2);
+                const blob = new Blob([json], { type: "application/json" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `comparison_bundle_${reports.length}_reports_${new Date().toISOString().slice(0, 10)}.json`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+              } catch (e) {
+                console.error("Bundle export failed", e);
+                alert("Failed to export comparison bundle");
+              } finally {
+                setIsExportingBundle(false);
+              }
+            }}
+            className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white px-4 py-2 rounded-lg font-medium transition-colors"
+            title="Export Comparison Bundle (JSON) for sharing/importing"
+          >
+            <Download className="w-4 h-4" /> {isExportingBundle ? "Exporting…" : "Export Bundle"}
+          </button>
+          </div>
+            </div>
+        </div>
+        
       {/* Baseline selector */}
       <div className="mb-6 rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
         <div className="flex items-center justify-between gap-4 flex-wrap">
@@ -1037,7 +1089,7 @@ export const ReportCompare: React.FC = () => {
                           />
                           <div className="truncate">
                             #{r.id} — {r.title}
-                          </div>
+            </div>
                         </div>
                       </td>
                       <td className="py-2 px-3 text-right tabular-nums">
@@ -1401,8 +1453,8 @@ export const ReportCompare: React.FC = () => {
             Selected CPU Comparison
           </h3>
           <div className="flex-1 min-h-0">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={alignedData}>
+                <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={alignedData}>
                 <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
                 <XAxis
                   dataKey="time_s"
@@ -1419,13 +1471,13 @@ export const ReportCompare: React.FC = () => {
                   fontSize={12}
                   label={{ value: "%", position: "insideLeft", angle: -90 }}
                 />
-                <Tooltip
+                        <Tooltip 
                   contentStyle={tooltipStyle}
                   labelFormatter={(label) =>
                     `T+${typeof label === "number" ? Math.round(label) : label}s`
                   }
                   formatter={(val: any) => (typeof val === "number" ? [val.toFixed(1) + "%"] : ["—"])}
-                />
+                        />
                 <Legend
                   wrapperStyle={{
                     cursor: "pointer",
@@ -1452,11 +1504,11 @@ export const ReportCompare: React.FC = () => {
                   fill={isDark ? "#1e293b" : "#e2e8f0"}
                   tickFormatter={() => ""}
                 />
-              </LineChart>
-            </ResponsiveContainer>
+                    </LineChart>
+                </ResponsiveContainer>
           </div>
           <div className="mt-2 text-xs text-slate-500 flex justify-end">Seconds (T+)</div>
-        </div>
+            </div>
 
         {/* Memory Compare */}
         <div
@@ -1467,8 +1519,8 @@ export const ReportCompare: React.FC = () => {
             Selected Memory Comparison
           </h3>
           <div className="flex-1 min-h-0">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={alignedData}>
+                <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={alignedData}>
                 <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
                 <XAxis
                   dataKey="time_s"
@@ -1488,7 +1540,7 @@ export const ReportCompare: React.FC = () => {
                   }
                   label={{ value: "MB", position: "insideLeft", angle: -90 }}
                 />
-                <Tooltip
+                        <Tooltip 
                   contentStyle={tooltipStyle}
                   labelFormatter={(label) =>
                     `T+${typeof label === "number" ? Math.round(label) : label}s`
@@ -1498,7 +1550,7 @@ export const ReportCompare: React.FC = () => {
                       ? [(val / 1024 / 1024).toFixed(1) + " MB"]
                       : ["—"]
                   }
-                />
+                        />
                 <Legend
                   wrapperStyle={{
                     cursor: "pointer",
@@ -1525,12 +1577,12 @@ export const ReportCompare: React.FC = () => {
                   fill={isDark ? "#1e293b" : "#e2e8f0"}
                   tickFormatter={() => ""}
                 />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
+                    </LineChart>
+                </ResponsiveContainer>
+            </div>
           <div className="mt-2 text-xs text-slate-500 flex justify-end">Seconds (T+)</div>
         </div>
-      </div>
+        </div>
     </div>
   );
 };

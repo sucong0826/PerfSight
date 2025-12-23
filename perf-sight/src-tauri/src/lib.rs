@@ -61,7 +61,8 @@ pub fn run() {
             commands::export_report_pdf,
             commands::export_report_dataset,
             commands::export_reports_bundle_zip,
-            commands::import_report_dataset
+            commands::import_report_dataset,
+            commands::import_comparison_bundle
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

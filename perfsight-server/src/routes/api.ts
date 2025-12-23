@@ -179,6 +179,22 @@ apiRouter.post("/datasets", async (req, res) => {
     const report = dataset.report;
     const meta = report.meta;
 
+    // Check for duplicate import (same original ID + same reportDate)
+    const existingRun = await prisma.run.findFirst({
+      where: {
+        originalId: report.id,
+        reportDate: new Date(report.created_at),
+      },
+    });
+
+    if (existingRun) {
+      return res.status(409).json({
+        error: "Duplicate dataset",
+        message: `This report has already been imported (existing ID: ${existingRun.id})`,
+        existingRunId: existingRun.id,
+      });
+    }
+
     // Extract indexed fields
     const release = extractRelease(meta);
     const scenario = meta?.test_context?.scenario_name || null;
@@ -413,6 +429,137 @@ apiRouter.get("/filters", async (req, res) => {
   } catch (err) {
     console.error("Get filters failed:", err);
     res.status(500).json({ error: "Get filters failed", details: String(err) });
+  }
+});
+
+/**
+ * POST /api/v1/bundles
+ * Import a comparison bundle (multiple reports + comparison context)
+ */
+apiRouter.post("/bundles", async (req, res) => {
+  try {
+    const bundle = req.body;
+
+    // Validate bundle format
+    if (!bundle || bundle.schema_version !== 1) {
+      return res.status(400).json({ error: "Invalid bundle: schema_version must be 1" });
+    }
+    if (bundle.bundle_type !== "comparison") {
+      return res.status(400).json({ error: "Invalid bundle: bundle_type must be 'comparison'" });
+    }
+    if (!Array.isArray(bundle.reports) || bundle.reports.length < 2) {
+      return res.status(400).json({ error: "Invalid bundle: at least 2 reports required" });
+    }
+
+    const importedRuns: Array<{ id: string; originalId: number; title: string }> = [];
+    const idMapping: Record<number, string> = {}; // originalId -> new server ID
+
+    // Import each report
+    for (const report of bundle.reports) {
+      const meta = report.meta;
+
+      // Check for existing import
+      const existingRun = await prisma.run.findFirst({
+        where: {
+          originalId: report.id,
+          reportDate: new Date(report.created_at),
+        },
+      });
+
+      if (existingRun) {
+        // Already exists, use existing ID
+        idMapping[report.id] = existingRun.id;
+        importedRuns.push({
+          id: existingRun.id,
+          originalId: report.id,
+          title: existingRun.title,
+        });
+        continue;
+      }
+
+      // Extract indexed fields
+      const release = extractRelease(meta);
+      const scenario = meta?.test_context?.scenario_name || null;
+      const buildId = meta?.test_context?.build_id || null;
+      const platform = extractPlatform(meta);
+      const browser = meta?.env?.browser_channel || null;
+      const mode = meta?.collection?.mode || null;
+      const tags = JSON.stringify(meta?.test_context?.tags || []);
+      const durationSeconds = meta?.collection?.duration_seconds || null;
+
+      // Compute stats
+      const stats = computeStats(report.metrics || []);
+
+      // Create a single-report dataset for storage
+      const singleDataset: ReportDatasetV1 = {
+        schema_version: 1,
+        exported_at: bundle.exported_at,
+        report: report,
+      };
+
+      // Store
+      const run = await prisma.run.create({
+        data: {
+          originalId: report.id,
+          title: report.title || `Report ${report.id}`,
+          reportDate: new Date(report.created_at),
+          release,
+          scenario,
+          buildId,
+          platform,
+          browser,
+          mode,
+          tags,
+          durationSeconds,
+          datasetJson: JSON.stringify(singleDataset),
+          avgCpu: stats.avgCpu,
+          avgMemMb: stats.avgMemMb,
+          p95Cpu: stats.p95Cpu,
+          p95MemMb: stats.p95MemMb,
+        },
+      });
+
+      idMapping[report.id] = run.id;
+      importedRuns.push({
+        id: run.id,
+        originalId: report.id,
+        title: run.title,
+      });
+    }
+
+    // Map comparison context to new IDs
+    const comparisonContext = bundle.comparison_context || {};
+    const baselineOriginalId = comparisonContext.baseline_original_id;
+    const newBaselineId = baselineOriginalId != null ? idMapping[baselineOriginalId] : null;
+
+    // Map process selections to new IDs
+    const mapSelections = (selections: Record<string, number[]> | undefined) => {
+      if (!selections) return {};
+      const result: Record<string, number[]> = {};
+      for (const [origId, pids] of Object.entries(selections)) {
+        const newId = idMapping[Number(origId)];
+        if (newId && Array.isArray(pids)) {
+          result[newId] = pids;
+        }
+      }
+      return result;
+    };
+
+    console.log(`✅ Imported bundle with ${importedRuns.length} reports`);
+
+    res.status(201).json({
+      success: true,
+      imported: importedRuns,
+      comparison: {
+        runIds: importedRuns.map((r) => r.id),
+        baselineId: newBaselineId,
+        cpuSelections: mapSelections(comparisonContext.cpu_selections_by_id),
+        memSelections: mapSelections(comparisonContext.mem_selections_by_id),
+      },
+    });
+  } catch (err) {
+    console.error("Bundle import failed:", err);
+    res.status(500).json({ error: "Bundle import failed", details: String(err) });
   }
 });
 

@@ -344,6 +344,81 @@ pub fn import_report_dataset(
     Ok(new_id)
 }
 
+/// Import a comparison bundle (multiple reports + context)
+/// Returns mapping from old IDs to new IDs and the comparison context
+#[tauri::command]
+pub fn import_comparison_bundle(
+    db: State<'_, Database>,
+    bundle_json: String
+) -> Result<Value, String> {
+    let v: Value = serde_json::from_str(&bundle_json).map_err(|e| format!("Invalid JSON: {e}"))?;
+    let schema_version = v.get("schema_version").and_then(|x| x.as_u64()).unwrap_or(0);
+    if schema_version != 1 {
+        return Err(format!("Unsupported bundle schema_version: {}", schema_version));
+    }
+    let bundle_type = v.get("bundle_type").and_then(|x| x.as_str()).unwrap_or("");
+    if bundle_type != "comparison" {
+        return Err(format!("Expected bundle_type 'comparison', got '{}'", bundle_type));
+    }
+    let reports_v = v.get("reports").ok_or("Missing reports array")?;
+    let reports_arr = reports_v.as_array().ok_or("reports is not an array")?;
+    if reports_arr.len() < 2 {
+        return Err("Bundle must contain at least 2 reports".to_string());
+    }
+
+    let mut id_mapping: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
+    let mut imported_ids: Vec<i64> = Vec::new();
+
+    for report_v in reports_arr {
+        let report: ReportDetail = serde_json::from_value(report_v.clone()).map_err(|e| e.to_string())?;
+        let original_id = report_v.get("id").and_then(|x| x.as_i64()).unwrap_or(0);
+        
+        // Import the report
+        let new_id = db
+            .import_report(&report.created_at, &report.title, &report.metrics, &report.meta)
+            .map_err(|e| e.to_string())?;
+        
+        id_mapping.insert(original_id, new_id);
+        imported_ids.push(new_id);
+    }
+
+    // Map comparison context IDs
+    let comparison_context = v.get("comparison_context").cloned().unwrap_or(Value::Null);
+    let baseline_original_id = comparison_context.get("baseline_original_id").and_then(|x| x.as_i64());
+    let baseline_new_id = baseline_original_id.and_then(|oid| id_mapping.get(&oid).copied());
+
+    // Map process selections
+    let map_selections = |selections: Option<&Value>| -> Value {
+        match selections {
+            Some(Value::Object(obj)) => {
+                let mut new_obj = serde_json::Map::new();
+                for (old_id_str, pids) in obj.iter() {
+                    if let Ok(old_id) = old_id_str.parse::<i64>() {
+                        if let Some(new_id) = id_mapping.get(&old_id) {
+                            new_obj.insert(new_id.to_string(), pids.clone());
+                        }
+                    }
+                }
+                Value::Object(new_obj)
+            }
+            _ => Value::Object(serde_json::Map::new()),
+        }
+    };
+
+    let cpu_selections = map_selections(comparison_context.get("cpu_selections_by_id"));
+    let mem_selections = map_selections(comparison_context.get("mem_selections_by_id"));
+
+    Ok(serde_json::json!({
+        "imported_ids": imported_ids,
+        "id_mapping": id_mapping,
+        "comparison": {
+            "baseline_id": baseline_new_id,
+            "cpu_selections_by_id": cpu_selections,
+            "mem_selections_by_id": mem_selections,
+        }
+    }))
+}
+
 // Helper to push a custom metric derived from logs
 pub fn push_custom_metric(
     app: &AppHandle,

@@ -14,12 +14,16 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     body { font-family: 'Inter', sans-serif; }
+    .custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
+    .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+    .custom-scrollbar::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+    .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
   </style>
 </head>
 <body class="bg-slate-50 text-slate-900 min-h-screen">
   <div id="root"></div>
   <script type="text/babel">
-    const { useState, useEffect, useMemo, useRef } = React;
+    const { useState, useEffect, useMemo, useRef, useCallback } = React;
 
     // ========================
     // API Client
@@ -53,10 +57,36 @@
     const formatCpu = (v) => v != null ? `${v.toFixed(1)}%` : '—';
     const formatMem = (v) => v != null ? `${v.toFixed(1)} MB` : '—';
 
-    const COLORS = [
-      '#6366f1', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', 
-      '#ec4899', '#06b6d4', '#84cc16'
-    ];
+    const COLORS = {
+      BASELINE: '#6366f1', // indigo
+      PALETTE: ['#f59e0b', '#10b981', '#06b6d4', '#8b5cf6', '#ef4444', '#ec4899', '#84cc16', '#14b8a6'],
+    };
+
+    const percentile = (arr, q) => {
+      if (!arr.length) return null;
+      const sorted = [...arr].sort((a, b) => a - b);
+      const idx = Math.round((sorted.length - 1) * q);
+      return sorted[Math.min(Math.max(idx, 0), sorted.length - 1)];
+    };
+    const avg = (arr) => arr.length ? arr.reduce((s, v) => s + v, 0) / arr.length : null;
+    const stddev = (arr, mean) => {
+      if (!arr.length || mean == null) return null;
+      const v = arr.reduce((acc, x) => acc + (x - mean) * (x - mean), 0) / arr.length;
+      return Math.sqrt(v);
+    };
+    const linregSlope = (ys) => {
+      const n = ys.length;
+      if (n <= 1) return 0;
+      const sumX = ((n - 1) * n) / 2;
+      let sumY = 0, sumXY = 0, sumXX = 0;
+      for (let i = 0; i < n; i++) {
+        sumY += ys[i];
+        sumXY += i * ys[i];
+        sumXX += i * i;
+      }
+      const denom = n * sumXX - sumX * sumX;
+      return denom === 0 ? 0 : (n * sumXY - sumX * sumY) / denom;
+    };
 
     // ========================
     // Chart Component using Chart.js
@@ -68,7 +98,6 @@
       useEffect(() => {
         if (!canvasRef.current || !data.length) return;
 
-        // Destroy previous chart
         if (chartRef.current) {
           chartRef.current.destroy();
         }
@@ -77,8 +106,8 @@
         const datasets = dataKeys.map((key, idx) => ({
           label: key.label,
           data: data.map(d => d[key.key]),
-          borderColor: COLORS[idx % COLORS.length],
-          backgroundColor: COLORS[idx % COLORS.length] + '20',
+          borderColor: key.color || COLORS.PALETTE[idx % COLORS.PALETTE.length],
+          backgroundColor: (key.color || COLORS.PALETTE[idx % COLORS.PALETTE.length]) + '20',
           borderWidth: 2,
           pointRadius: 0,
           tension: 0.3,
@@ -88,7 +117,7 @@
         chartRef.current = new Chart(ctx, {
           type: 'line',
           data: {
-            labels: data.map(d => `${Math.round(d.elapsed)}s`),
+            labels: data.map(d => `${Math.round(d.elapsed || d.time_s || 0)}s`),
             datasets,
           },
           options: {
@@ -139,15 +168,15 @@
     }
 
     // ========================
-    // Components
+    // RunsList Component
     // ========================
-
-    function RunsList({ onSelect }) {
+    function RunsList({ onSelect, onCompare }) {
       const [runs, setRuns] = useState([]);
       const [filters, setFilters] = useState({});
       const [filterOptions, setFilterOptions] = useState({});
       const [loading, setLoading] = useState(true);
       const [importing, setImporting] = useState(false);
+      const [selectedIds, setSelectedIds] = useState(new Set());
       const fileInputRef = useRef(null);
 
       const loadRuns = () => {
@@ -170,6 +199,11 @@
         if (!confirm('Delete this run?')) return;
         await api.deleteRun(id);
         setRuns(runs.filter(r => r.id !== id));
+        setSelectedIds(prev => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
       };
 
       const handleImport = async (e) => {
@@ -179,37 +213,78 @@
         try {
           setImporting(true);
           const text = await file.text();
-          const dataset = JSON.parse(text);
+          const data = JSON.parse(text);
           
-          // Validate dataset structure
-          if (dataset.schema_version !== 1 || !dataset.report) {
-            throw new Error('Invalid dataset format. Expected schema_version: 1 and report object.');
+          // Check if it's a comparison bundle
+          if (data.bundle_type === 'comparison' && Array.isArray(data.reports)) {
+            // Import as bundle
+            const res = await fetch('/api/v1/bundles', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: text,
+            });
+
+            if (!res.ok) {
+              const err = await res.json().catch(() => ({}));
+              throw new Error(err.error || `Bundle import failed: ${res.status}`);
+            }
+
+            const result = await res.json();
+            const importedCount = result.imported?.length || 0;
+            
+            alert(`✅ Comparison Bundle imported!\n${importedCount} reports imported.\n\nOpening Compare view...`);
+            
+            loadRuns();
+            api.getFilters().then(setFilterOptions).catch(console.error);
+            
+            // Navigate to compare view with the imported run IDs
+            if (result.comparison?.runIds?.length >= 2) {
+              // Pass the comparison context to onCompare
+              onCompare(result.comparison.runIds, result.comparison);
+            }
+          } else if (data.schema_version === 1 && data.report) {
+            // Single dataset import
+            const res = await fetch('/api/v1/datasets', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: text,
+            });
+
+            if (!res.ok) {
+              const err = await res.json().catch(() => ({}));
+              throw new Error(err.error || `Upload failed: ${res.status}`);
+            }
+
+            const result = await res.json();
+            alert(`✅ Import successful!\nRun ID: ${result.run?.id}\nTitle: ${result.run?.title}`);
+            
+            loadRuns();
+            api.getFilters().then(setFilterOptions).catch(console.error);
+          } else {
+            throw new Error('Invalid format. Expected a dataset (schema_version: 1 + report) or comparison bundle (bundle_type: "comparison" + reports array).');
           }
-
-          const res = await fetch('/api/v1/datasets', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: text,
-          });
-
-          if (!res.ok) {
-            const err = await res.json().catch(() => ({}));
-            throw new Error(err.error || `Upload failed: ${res.status}`);
-          }
-
-          const result = await res.json();
-          alert(`✅ Import successful!\nRun ID: ${result.run?.id}\nTitle: ${result.run?.title}`);
-          
-          // Refresh list
-          loadRuns();
-          api.getFilters().then(setFilterOptions).catch(console.error);
         } catch (err) {
           console.error('Import failed:', err);
           alert(`❌ Import failed: ${err.message}`);
         } finally {
           setImporting(false);
-          // Reset file input
           if (fileInputRef.current) fileInputRef.current.value = '';
+        }
+      };
+
+      const toggleSelect = (e, id) => {
+        e.stopPropagation();
+        setSelectedIds(prev => {
+          const next = new Set(prev);
+          if (next.has(id)) next.delete(id);
+          else next.add(id);
+          return next;
+        });
+      };
+
+      const handleCompare = () => {
+        if (selectedIds.size >= 2) {
+          onCompare(Array.from(selectedIds));
         }
       };
 
@@ -218,6 +293,17 @@
           <div className="flex items-center justify-between mb-6">
             <h1 className="text-2xl font-bold text-slate-800">Test Reports</h1>
             <div className="flex items-center gap-4">
+              {selectedIds.size >= 2 && (
+                <button
+                  onClick={handleCompare}
+                  className="flex items-center gap-2 bg-violet-600 hover:bg-violet-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                  </svg>
+                  Compare ({selectedIds.size})
+                </button>
+              )}
               <div className="text-sm text-slate-500">{runs.length} reports</div>
               <input
                 type="file"
@@ -310,73 +396,99 @@
             </div>
           ) : (
             <div className="space-y-3">
-              {runs.map(run => (
-                <div 
-                  key={run.id}
-                  onClick={() => onSelect(run.id)}
-                  className="bg-white border border-slate-200 rounded-xl p-4 hover:border-indigo-400 cursor-pointer transition-colors shadow-sm"
-                >
-                  <div className="flex items-start justify-between">
-                    <div className="min-w-0 flex-1">
-                      <div className="font-medium text-slate-800 truncate">{run.title}</div>
-                      <div className="text-sm text-slate-500 mt-1">
-                        {formatDate(run.reportDate)}
-                        {run.durationSeconds && <span className="ml-3">⏱ {formatDuration(run.durationSeconds)}</span>}
+              {runs.map(run => {
+                const isSelected = selectedIds.has(run.id);
+                return (
+                  <div 
+                    key={run.id}
+                    onClick={() => onSelect(run.id)}
+                    className={`bg-white border rounded-xl p-4 cursor-pointer transition-colors shadow-sm ${
+                      isSelected 
+                        ? 'border-indigo-500 bg-indigo-50/30' 
+                        : 'border-slate-200 hover:border-indigo-400'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between">
+                      <div className="flex items-start gap-3 min-w-0 flex-1">
+                        <button
+                          onClick={(e) => toggleSelect(e, run.id)}
+                          className="mt-1 shrink-0"
+                        >
+                          {isSelected ? (
+                            <svg className="w-5 h-5 text-indigo-600" fill="currentColor" viewBox="0 0 20 20">
+                              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                            </svg>
+                          ) : (
+                            <svg className="w-5 h-5 text-slate-300 hover:text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <circle cx="12" cy="12" r="10" strokeWidth="2" />
+                            </svg>
+                          )}
+                        </button>
+                        <div className="min-w-0 flex-1">
+                          <div className="font-medium text-slate-800 truncate">{run.title}</div>
+                          <div className="text-sm text-slate-500 mt-1">
+                            {formatDate(run.reportDate)}
+                            {run.durationSeconds && <span className="ml-3">⏱ {formatDuration(run.durationSeconds)}</span>}
+                          </div>
+                          <div className="flex flex-wrap gap-2 mt-2">
+                            {run.release && (
+                              <span className="px-2 py-0.5 bg-indigo-100 text-indigo-700 rounded text-xs font-medium">
+                                {run.release}
+                              </span>
+                            )}
+                            {run.scenario && (
+                              <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded text-xs">
+                                {run.scenario}
+                              </span>
+                            )}
+                            {run.platform && (
+                              <span className="px-2 py-0.5 bg-slate-100 text-slate-600 rounded text-xs">
+                                {run.platform}
+                              </span>
+                            )}
+                            {run.mode && (
+                              <span className="px-2 py-0.5 bg-amber-100 text-amber-700 rounded text-xs">
+                                {run.mode}
+                              </span>
+                            )}
+                          </div>
+                        </div>
                       </div>
-                      <div className="flex flex-wrap gap-2 mt-2">
-                        {run.release && (
-                          <span className="px-2 py-0.5 bg-indigo-100 text-indigo-700 rounded text-xs font-medium">
-                            {run.release}
-                          </span>
-                        )}
-                        {run.scenario && (
-                          <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded text-xs">
-                            {run.scenario}
-                          </span>
-                        )}
-                        {run.platform && (
-                          <span className="px-2 py-0.5 bg-slate-100 text-slate-600 rounded text-xs">
-                            {run.platform}
-                          </span>
-                        )}
-                        {run.mode && (
-                          <span className="px-2 py-0.5 bg-amber-100 text-amber-700 rounded text-xs">
-                            {run.mode}
-                          </span>
-                        )}
+                      <div className="text-right ml-4 shrink-0">
+                        <div className="text-sm">
+                          <span className="text-slate-500">CPU:</span>{' '}
+                          <span className="font-medium">{formatCpu(run.avgCpu)}</span>
+                          {run.p95Cpu != null && (
+                            <span className="text-slate-400 ml-1">(P95: {formatCpu(run.p95Cpu)})</span>
+                          )}
+                        </div>
+                        <div className="text-sm mt-1">
+                          <span className="text-slate-500">Mem:</span>{' '}
+                          <span className="font-medium">{formatMem(run.avgMemMb)}</span>
+                          {run.p95MemMb != null && (
+                            <span className="text-slate-400 ml-1">(P95: {formatMem(run.p95MemMb)})</span>
+                          )}
+                        </div>
+                        <button 
+                          onClick={(e) => handleDelete(e, run.id)}
+                          className="mt-2 text-xs text-rose-500 hover:text-rose-700"
+                        >
+                          Delete
+                        </button>
                       </div>
-                    </div>
-                    <div className="text-right ml-4 shrink-0">
-                      <div className="text-sm">
-                        <span className="text-slate-500">CPU:</span>{' '}
-                        <span className="font-medium">{formatCpu(run.avgCpu)}</span>
-                        {run.p95Cpu != null && (
-                          <span className="text-slate-400 ml-1">(P95: {formatCpu(run.p95Cpu)})</span>
-                        )}
-                      </div>
-                      <div className="text-sm mt-1">
-                        <span className="text-slate-500">Mem:</span>{' '}
-                        <span className="font-medium">{formatMem(run.avgMemMb)}</span>
-                        {run.p95MemMb != null && (
-                          <span className="text-slate-400 ml-1">(P95: {formatMem(run.p95MemMb)})</span>
-                        )}
-                      </div>
-                      <button 
-                        onClick={(e) => handleDelete(e, run.id)}
-                        className="mt-2 text-xs text-rose-500 hover:text-rose-700"
-                      >
-                        Delete
-                      </button>
                     </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
       );
     }
 
+    // ========================
+    // RunDetail Component
+    // ========================
     function RunDetail({ runId, onBack }) {
       const [run, setRun] = useState(null);
       const [loading, setLoading] = useState(true);
@@ -389,33 +501,6 @@
           .finally(() => setLoading(false));
       }, [runId]);
 
-      // Helper functions for statistics
-      const percentile = (arr, q) => {
-        if (!arr.length) return null;
-        const sorted = [...arr].sort((a, b) => a - b);
-        const idx = Math.round((sorted.length - 1) * q);
-        return sorted[Math.min(Math.max(idx, 0), sorted.length - 1)];
-      };
-      const avg = (arr) => arr.length ? arr.reduce((s, v) => s + v, 0) / arr.length : null;
-      const stddev = (arr, mean) => {
-        if (!arr.length || mean == null) return null;
-        const v = arr.reduce((acc, x) => acc + (x - mean) * (x - mean), 0) / arr.length;
-        return Math.sqrt(v);
-      };
-      const linregSlope = (ys) => {
-        const n = ys.length;
-        if (n <= 1) return 0;
-        const sumX = ((n - 1) * n) / 2;
-        let sumY = 0, sumXY = 0, sumXX = 0;
-        for (let i = 0; i < n; i++) {
-          sumY += ys[i];
-          sumXY += i * ys[i];
-          sumXX += i * i;
-        }
-        const denom = n * sumXX - sumX * sumX;
-        return denom === 0 ? 0 : (n * sumXY - sumX * sumY) / denom;
-      };
-
       // Process metrics for charts AND per-process summaries
       const { chartData, pids, processLabels, perPidSummaries } = useMemo(() => {
         if (!run?.report?.metrics) return { chartData: [], pids: [], processLabels: {}, perPidSummaries: [] };
@@ -426,7 +511,6 @@
         const labels = {};
         const byPid = new Map();
         
-        // Get process labels from snapshot
         const snapshot = run.report?.meta?.process_snapshot || [];
         const snapByPid = new Map();
         for (const p of snapshot) {
@@ -450,7 +534,6 @@
             if (typeof mem === 'number') row[`mem_${pid}`] = mem / (1024 * 1024);
             if (!labels[pid]) labels[pid] = `PID ${pid}`;
             
-            // Collect for per-PID stats
             if (!byPid.has(pid)) byPid.set(pid, { cpu: [], memMb: [] });
             const s = byPid.get(pid);
             if (typeof cpu === 'number' && Number.isFinite(cpu)) s.cpu.push(cpu);
@@ -459,7 +542,6 @@
           return row;
         });
 
-        // Calculate per-PID summaries
         const summaries = Array.from(byPid.entries()).map(([pid, s]) => {
           const snap = snapByPid.get(pid);
           const avgCpu = avg(s.cpu);
@@ -516,11 +598,9 @@
       const insights = analysis.insights || [];
       const score = analysis.score;
 
-      // Prepare chart data keys
       const cpuKeys = pids.map(pid => ({ key: `cpu_${pid}`, label: processLabels[pid] || `PID ${pid}` }));
       const memKeys = pids.map(pid => ({ key: `mem_${pid}`, label: processLabels[pid] || `PID ${pid}` }));
       
-      // Score color
       const getScoreColor = (s) => {
         if (s == null) return 'text-slate-500';
         if (s >= 80) return 'text-emerald-600';
@@ -576,9 +656,9 @@
             )}
           </div>
 
-          {/* Metadata Section - Comprehensive */}
+          {/* Metadata Section */}
           <div className="bg-white border border-slate-200 rounded-xl p-5 mb-6">
-            <div className="text-sm text-slate-500 uppercase font-bold mb-3">Metadata (for AI / reproducibility)</div>
+            <div className="text-sm text-slate-500 uppercase font-bold mb-3">Metadata</div>
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 text-sm">
               {/* Collection */}
               <div className="bg-slate-50 border border-slate-200 rounded-lg p-3">
@@ -596,8 +676,6 @@
                     <span className="text-slate-400">duration</span>
                     <span className="tabular-nums">{meta.collection?.duration_seconds ? `${meta.collection.duration_seconds}s` : '—'}</span>
                   </div>
-                  <div className="text-xs text-slate-500 mt-2">started: {meta.collection?.started_at || '—'}</div>
-                  <div className="text-xs text-slate-500">ended: {meta.collection?.ended_at || '—'}</div>
                 </div>
               </div>
 
@@ -614,19 +692,11 @@
                     <span className="tabular-nums truncate max-w-[150px]">{meta.env?.device_name || '—'}</span>
                   </div>
                   <div className="flex justify-between gap-3">
-                    <span className="text-slate-400">arch</span>
-                    <span className="tabular-nums">{meta.env?.arch || '—'}</span>
-                  </div>
-                  <div className="flex justify-between gap-3">
                     <span className="text-slate-400">cpu</span>
                     <span className="tabular-nums truncate max-w-[150px]" title={meta.env?.cpu_brand}>{meta.env?.cpu_brand || '—'}</span>
                   </div>
                   <div className="flex justify-between gap-3">
-                    <span className="text-slate-400">cpu cores</span>
-                    <span className="tabular-nums">{meta.env?.cpu_logical_cores || meta.env?.cpu_physical_cores || '—'}</span>
-                  </div>
-                  <div className="flex justify-between gap-3">
-                    <span className="text-slate-400">total RAM</span>
+                    <span className="text-slate-400">RAM</span>
                     <span className="tabular-nums">
                       {meta.env?.total_memory_bytes ? `${Math.round(meta.env.total_memory_bytes / 1024 / 1024 / 1024)} GB` : 
                        meta.env?.total_mem_gb ? `${meta.env.total_mem_gb} GB` : '—'}
@@ -642,7 +712,7 @@
                   PIDs: {(meta.collection?.target_pids || []).join(', ') || '—'}
                 </div>
                 <div className="text-xs text-slate-500 mt-2">
-                  process snapshot: {(meta.process_snapshot?.length || 0) > 0 ? `${meta.process_snapshot.length} processes` : '—'}
+                  snapshot: {(meta.process_snapshot?.length || 0)} processes
                 </div>
               </div>
             </div>
@@ -683,15 +753,12 @@
               <div className={`text-5xl font-bold ${getScoreColor(score)}`}>
                 {score != null ? score : '—'}
               </div>
-              <div className="absolute top-0 right-0 p-2 opacity-10 text-6xl">
-                {score >= 80 ? '✓' : '⚠'}
-              </div>
             </div>
 
             {/* Per-Process Metrics */}
             <div className="lg:col-span-3 bg-white border border-slate-200 p-5 rounded-xl">
-              <div className="text-sm text-slate-500 uppercase font-bold mb-3">Per-Process Metrics (primary)</div>
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 max-h-[400px] overflow-y-auto">
+              <div className="text-sm text-slate-500 uppercase font-bold mb-3">Per-Process Metrics</div>
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 max-h-[400px] overflow-y-auto custom-scrollbar">
                 {perPidSummaries.map((p) => (
                   <div key={`proc_${p.pid}`} className="bg-slate-50 border border-slate-200 rounded-lg p-4">
                     <div className="flex items-center justify-between mb-2">
@@ -710,36 +777,12 @@
                             <span className="tabular-nums">{p.avg_cpu != null ? `${p.avg_cpu.toFixed(1)}%` : '—'}</span>
                           </div>
                           <div className="flex justify-between">
-                            <span className="text-slate-400">p50</span>
-                            <span className="tabular-nums">{p.p50_cpu != null ? `${p.p50_cpu.toFixed(1)}%` : '—'}</span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span className="text-slate-400">p90</span>
-                            <span className="tabular-nums">{p.p90_cpu != null ? `${p.p90_cpu.toFixed(1)}%` : '—'}</span>
-                          </div>
-                          <div className="flex justify-between">
                             <span className="text-slate-400">p95</span>
                             <span className="tabular-nums">{p.p95_cpu != null ? `${p.p95_cpu.toFixed(1)}%` : '—'}</span>
                           </div>
                           <div className="flex justify-between">
-                            <span className="text-slate-400">p99</span>
-                            <span className="tabular-nums">{p.p99_cpu != null ? `${p.p99_cpu.toFixed(1)}%` : '—'}</span>
-                          </div>
-                          <div className="flex justify-between">
                             <span className="text-slate-400">max</span>
                             <span className="tabular-nums">{p.max_cpu != null ? `${p.max_cpu.toFixed(1)}%` : '—'}</span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span className="text-slate-400">stddev</span>
-                            <span className="tabular-nums">{p.cpu_stddev != null ? p.cpu_stddev.toFixed(1) : '—'}</span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span className="text-slate-400">&gt;30%</span>
-                            <span className="tabular-nums">{p.cpu_high_30 != null ? `${(p.cpu_high_30 * 100).toFixed(0)}%` : '—'}</span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span className="text-slate-400">&gt;60%</span>
-                            <span className="tabular-nums">{p.cpu_high_60 != null ? `${(p.cpu_high_60 * 100).toFixed(0)}%` : '—'}</span>
                           </div>
                         </div>
                       </div>
@@ -753,46 +796,18 @@
                             <span className="tabular-nums">{p.avg_mem != null ? `${p.avg_mem.toFixed(0)}MB` : '—'}</span>
                           </div>
                           <div className="flex justify-between">
-                            <span className="text-slate-400">p50</span>
-                            <span className="tabular-nums">{p.p50_mem != null ? `${p.p50_mem.toFixed(0)}MB` : '—'}</span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span className="text-slate-400">p90</span>
-                            <span className="tabular-nums">{p.p90_mem != null ? `${p.p90_mem.toFixed(0)}MB` : '—'}</span>
-                          </div>
-                          <div className="flex justify-between">
                             <span className="text-slate-400">p95</span>
                             <span className="tabular-nums">{p.p95_mem != null ? `${p.p95_mem.toFixed(0)}MB` : '—'}</span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span className="text-slate-400">p99</span>
-                            <span className="tabular-nums">{p.p99_mem != null ? `${p.p99_mem.toFixed(0)}MB` : '—'}</span>
                           </div>
                           <div className="flex justify-between">
                             <span className="text-slate-400">max</span>
                             <span className="tabular-nums">{p.max_mem != null ? `${p.max_mem.toFixed(0)}MB` : '—'}</span>
                           </div>
-                          <div className="flex justify-between">
-                            <span className="text-slate-400">stddev</span>
-                            <span className="tabular-nums">{p.mem_stddev != null ? `${p.mem_stddev.toFixed(1)}` : '—'}</span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span className="text-slate-400">&gt;512MB</span>
-                            <span className="tabular-nums">{p.mem_high_512 != null ? `${(p.mem_high_512 * 100).toFixed(0)}%` : '—'}</span>
-                          </div>
-                          <div className="flex justify-between">
-                            <span className="text-slate-400">growth</span>
-                            <span className="tabular-nums">{p.mem_growth != null ? `${p.mem_growth.toFixed(3)} MB/s` : '—'}</span>
-                          </div>
                         </div>
                       </div>
                     </div>
-                    <div className="text-xs text-slate-400 mt-2 text-right">samples: {p.samples}</div>
                   </div>
                 ))}
-                {perPidSummaries.length === 0 && (
-                  <div className="text-sm text-slate-500 italic">No per-process data found.</div>
-                )}
               </div>
             </div>
           </div>
@@ -800,10 +815,10 @@
           {/* Overall Stats */}
           {analysis.summary && (
             <div className="bg-white border border-slate-200 rounded-xl p-5 mb-6">
-              <div className="text-sm text-slate-500 uppercase font-bold mb-3">Overall (avg only)</div>
+              <div className="text-sm text-slate-500 uppercase font-bold mb-3">Overall Summary</div>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <div>
-                  <div className="text-xs text-slate-500">Avg CPU (total)</div>
+                  <div className="text-xs text-slate-500">Avg CPU</div>
                   <div className="text-xl font-medium">{analysis.summary.avg_cpu?.toFixed(1) || '—'}%</div>
                 </div>
                 <div>
@@ -811,7 +826,7 @@
                   <div className="text-xl font-medium">{analysis.summary.max_cpu?.toFixed(1) || '—'}%</div>
                 </div>
                 <div>
-                  <div className="text-xs text-slate-500">Avg Memory (total)</div>
+                  <div className="text-xs text-slate-500">Avg Memory</div>
                   <div className="text-xl font-medium">{analysis.summary.avg_mem_mb?.toFixed(0) || '—'} MB</div>
                 </div>
                 <div>
@@ -837,7 +852,7 @@
             </div>
           )}
 
-          {/* CPU Chart */}
+          {/* Charts */}
           {chartData.length > 0 && cpuKeys.length > 0 && (
             <LineChartComponent
               data={chartData}
@@ -848,7 +863,6 @@
             />
           )}
 
-          {/* Memory Chart */}
           {chartData.length > 0 && memKeys.length > 0 && (
             <LineChartComponent
               data={chartData}
@@ -893,9 +907,589 @@
       );
     }
 
+    // ========================
+    // RunCompare Component
+    // ========================
+    function RunCompare({ runIds, initialContext, onBack, onViewDetail }) {
+      const [runs, setRuns] = useState([]);
+      const [loading, setLoading] = useState(true);
+      const [tab, setTab] = useState('cpu'); // 'cpu' | 'mem'
+      const [baselineId, setBaselineId] = useState(null);
+      const [cpuSelById, setCpuSelById] = useState({});
+      const [memSelById, setMemSelById] = useState({});
+      const [isExporting, setIsExporting] = useState(false);
+      const [isExportingBundle, setIsExportingBundle] = useState(false);
+
+      useEffect(() => {
+        loadRuns();
+      }, [runIds]);
+
+      const loadRuns = async () => {
+        try {
+          setLoading(true);
+          const results = await Promise.all(
+            runIds.map(id => api.getRun(id))
+          );
+          setRuns(results.filter(Boolean));
+          
+          // Use baseline from initialContext if available, otherwise first report
+          if (initialContext?.baselineId) {
+            setBaselineId(initialContext.baselineId);
+          } else if (results.length > 0) {
+            setBaselineId(results[0]?.id);
+          }
+
+          // Initialize selections - use initialContext if available, otherwise all PIDs
+          const nextCpu = {};
+          const nextMem = {};
+          results.forEach(r => {
+            if (!r?.report) return;
+            const pids = extractPids(r);
+            
+            // Check if we have initial selections from bundle
+            if (initialContext?.cpuSelections?.[r.id]) {
+              nextCpu[r.id] = initialContext.cpuSelections[r.id];
+            } else {
+              nextCpu[r.id] = pids;
+            }
+            
+            if (initialContext?.memSelections?.[r.id]) {
+              nextMem[r.id] = initialContext.memSelections[r.id];
+            } else {
+              nextMem[r.id] = pids;
+            }
+          });
+          setCpuSelById(nextCpu);
+          setMemSelById(nextMem);
+        } catch (e) {
+          console.error('Failed to load runs:', e);
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      const extractPids = (run) => {
+        if (!run?.report?.metrics) return [];
+        const pids = new Set();
+        run.report.metrics.forEach(b => {
+          Object.keys(b.metrics || {}).forEach(pidStr => {
+            const pid = Number(pidStr);
+            if (Number.isFinite(pid)) pids.add(pid);
+          });
+        });
+        return Array.from(pids);
+      };
+
+      const getProcLabel = (run, pid) => {
+        const snap = run?.report?.meta?.process_snapshot || [];
+        const p = snap.find(s => s.pid === pid);
+        return p?.alias || p?.title || p?.name || `PID ${pid}`;
+      };
+
+      const getColorForRun = (runId) => {
+        const idx = runs.findIndex(r => r.id === runId);
+        if (runId === baselineId) return COLORS.BASELINE;
+        return COLORS.PALETTE[idx % COLORS.PALETTE.length];
+      };
+
+      // Build aligned chart data
+      const alignedData = useMemo(() => {
+        if (runs.length < 2) return [];
+        const baseline = runs.find(r => r.id === baselineId) || runs[0];
+        const intervalMs = baseline?.report?.meta?.collection?.interval_ms || 1000;
+        const maxLen = Math.max(...runs.map(r => (r?.report?.metrics || []).length));
+        
+        const data = [];
+        for (let i = 0; i < maxLen; i++) {
+          const row = { time_s: (i * intervalMs) / 1000 };
+          
+          runs.forEach(r => {
+            if (!r?.report?.metrics?.[i]) return;
+            const batch = r.report.metrics[i];
+            const selectedPids = new Set(tab === 'cpu' ? (cpuSelById[r.id] || []) : (memSelById[r.id] || []));
+            
+            if (!selectedPids.size) {
+              row[`${tab}_${r.id}`] = null;
+              return;
+            }
+            
+            let total = 0;
+            Object.entries(batch.metrics || {}).forEach(([pidStr, m]) => {
+              const pid = Number(pidStr);
+              if (!selectedPids.has(pid)) return;
+              
+              if (tab === 'cpu') {
+                const cpu = m.cpu_chrome_usage ?? m.cpu_os_usage ?? m.cpu_usage;
+                if (typeof cpu === 'number' && Number.isFinite(cpu)) total += cpu;
+              } else {
+                const mem = m.memory_private ?? m.memory_footprint ?? m.memory_rss;
+                if (typeof mem === 'number' && Number.isFinite(mem)) total += mem / (1024 * 1024);
+              }
+            });
+            
+            row[`${tab}_${r.id}`] = total;
+          });
+          
+          data.push(row);
+        }
+        return data;
+      }, [runs, tab, cpuSelById, memSelById, baselineId]);
+
+      // Stats per run
+      const statsById = useMemo(() => {
+        const out = {};
+        runs.forEach(r => {
+          if (!r?.id) return;
+          const values = alignedData.map(d => d[`${tab}_${r.id}`]).filter(v => v != null && Number.isFinite(v));
+          out[r.id] = {
+            avg: avg(values),
+            p95: percentile(values, 0.95),
+            max: values.length ? Math.max(...values) : null,
+            samples: values.length,
+          };
+        });
+        return out;
+      }, [runs, alignedData, tab]);
+
+      const togglePid = (runId, pid) => {
+        const setter = tab === 'cpu' ? setCpuSelById : setMemSelById;
+        setter(prev => {
+          const arr = prev[runId] || [];
+          const set = new Set(arr);
+          if (set.has(pid)) set.delete(pid);
+          else set.add(pid);
+          return { ...prev, [runId]: Array.from(set) };
+        });
+      };
+
+      if (loading) {
+        return <div className="p-6 text-center text-slate-500">Loading comparison...</div>;
+      }
+
+      if (runs.length < 2) {
+        return (
+          <div className="p-6 text-center text-slate-500">
+            Need at least 2 reports to compare.
+            <button onClick={onBack} className="block mt-4 text-indigo-600 hover:underline">← Back to list</button>
+          </div>
+        );
+      }
+
+      const chartDataKeys = runs.map(r => ({
+        key: `${tab}_${r.id}`,
+        label: r.title,
+        color: getColorForRun(r.id),
+      }));
+
+      // Delta badge helper
+      const deltaBadge = (delta, isWorse) => {
+        if (delta == null || !Number.isFinite(delta)) return null;
+        const worse = isWorse ? delta > 0 : delta < 0;
+        const cls = worse
+          ? 'text-rose-600 bg-rose-50 border-rose-200'
+          : 'text-emerald-600 bg-emerald-50 border-emerald-200';
+        const arrow = worse ? '↑' : '↓';
+        return (
+          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border text-xs font-medium ${cls}`}>
+            {arrow} {delta > 0 ? '+' : ''}{delta.toFixed(1)}{tab === 'cpu' ? '%' : ' MB'}
+          </span>
+        );
+      };
+
+      // Export bundle handler
+      const handleExportBundle = async () => {
+        try {
+          setIsExportingBundle(true);
+          const bundle = {
+            schema_version: 1,
+            bundle_type: "comparison",
+            exported_at: new Date().toISOString(),
+            comparison_context: {
+              baseline_original_id: baselineId,
+              cpu_selections_by_id: cpuSelById,
+              mem_selections_by_id: memSelById,
+            },
+            reports: runs.map(r => ({
+              id: r.originalId || r.id,
+              created_at: r.reportDate,
+              title: r.title,
+              metrics: r.report?.metrics || [],
+              analysis: r.report?.analysis || null,
+              meta: r.report?.meta || {},
+            })),
+          };
+          const json = JSON.stringify(bundle, null, 2);
+          const blob = new Blob([json], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `comparison_bundle_${runs.length}_reports_${new Date().toISOString().slice(0, 10)}.json`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+        } catch (e) {
+          console.error('Bundle export failed:', e);
+          alert('Failed to export bundle');
+        } finally {
+          setIsExportingBundle(false);
+        }
+      };
+
+      return (
+        <div className="p-6">
+          {/* Header */}
+          <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center gap-4">
+              <button 
+                onClick={onBack}
+                className="p-2 hover:bg-slate-100 rounded-lg text-slate-500 transition-colors"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+                </svg>
+              </button>
+              <div>
+                <h1 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+                  <svg className="w-5 h-5 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                  </svg>
+                  Comparison
+                </h1>
+                <div className="text-sm text-slate-500">{runs.length} reports selected</div>
+              </div>
+            </div>
+
+            {/* Export Buttons */}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleExportBundle}
+                disabled={isExportingBundle}
+                className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                </svg>
+                {isExportingBundle ? 'Exporting...' : 'Export Bundle'}
+              </button>
+            </div>
+          </div>
+
+          {/* Baseline Selector Card */}
+          <div className="bg-white border border-slate-200 rounded-xl p-4 mb-6">
+            <div className="flex items-center justify-between flex-wrap gap-4">
+              <div>
+                <div className="text-sm font-medium text-slate-700">Baseline Selection</div>
+                <div className="text-xs text-slate-500">Choose a baseline to enable delta comparison, or select "None" for overlay mode.</div>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-slate-500">Baseline</span>
+                <select
+                  value={baselineId || ''}
+                  onChange={e => setBaselineId(e.target.value || null)}
+                  className="px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm min-w-[200px]"
+                >
+                  <option value="">None (overlay)</option>
+                  {runs.map(r => (
+                    <option key={r.id} value={r.id}>#{r.originalId || r.id} — {r.title}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          </div>
+
+          {/* Metric Tabs */}
+          <div className="flex gap-2 mb-6">
+            <button
+              onClick={() => setTab('cpu')}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                tab === 'cpu' 
+                  ? 'bg-indigo-600 text-white' 
+                  : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-50'
+              }`}
+            >
+              CPU
+            </button>
+            <button
+              onClick={() => setTab('mem')}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                tab === 'mem' 
+                  ? 'bg-indigo-600 text-white' 
+                  : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-50'
+              }`}
+            >
+              Memory
+            </button>
+          </div>
+
+          {/* Summary Stats Table */}
+          <div className="bg-white border border-slate-200 rounded-xl p-5 mb-6 overflow-x-auto">
+            <div className="text-sm text-slate-500 uppercase font-bold mb-4">
+              {tab === 'cpu' ? 'CPU' : 'Memory'} Comparison Summary
+            </div>
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-200">
+                  <th className="text-left py-2 pr-4 text-slate-500 font-medium">Report</th>
+                  <th className="text-right py-2 px-3 text-slate-500 font-medium">Avg</th>
+                  <th className="text-right py-2 px-3 text-slate-500 font-medium">P95</th>
+                  <th className="text-right py-2 px-3 text-slate-500 font-medium">Max</th>
+                  {baselineId && <th className="text-right py-2 pl-3 text-slate-500 font-medium">Δ vs Baseline</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {runs.map(r => {
+                  const stats = statsById[r.id] || {};
+                  const isBaseline = r.id === baselineId;
+                  const color = getColorForRun(r.id);
+                  const baseStats = baselineId ? (statsById[baselineId] || {}) : {};
+                  const avgDelta = baselineId && !isBaseline && stats.avg != null && baseStats.avg != null
+                    ? stats.avg - baseStats.avg
+                    : null;
+                  
+                  return (
+                    <tr key={r.id} className="border-b border-slate-100 hover:bg-slate-50">
+                      <td className="py-3 pr-4">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <div className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: color }} />
+                          <span className="truncate font-medium">{r.title}</span>
+                          {isBaseline && (
+                            <span className="text-xs px-2 py-0.5 bg-indigo-100 text-indigo-700 rounded shrink-0">Baseline</span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="py-3 px-3 text-right tabular-nums font-medium">
+                        {tab === 'cpu' ? formatCpu(stats.avg) : formatMem(stats.avg)}
+                      </td>
+                      <td className="py-3 px-3 text-right tabular-nums font-medium">
+                        {tab === 'cpu' ? formatCpu(stats.p95) : formatMem(stats.p95)}
+                      </td>
+                      <td className="py-3 px-3 text-right tabular-nums font-medium">
+                        {tab === 'cpu' ? formatCpu(stats.max) : formatMem(stats.max)}
+                      </td>
+                      {baselineId && (
+                        <td className="py-3 pl-3 text-right">
+                          {isBaseline ? (
+                            <span className="text-xs text-slate-400">—</span>
+                          ) : avgDelta != null ? (
+                            deltaBadge(avgDelta, true)
+                          ) : (
+                            <span className="text-xs text-slate-400">—</span>
+                          )}
+                        </td>
+                      )}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Per-Report Process Selectors */}
+          <div className="bg-white border border-slate-200 rounded-xl p-5 mb-6">
+            <div className="text-sm text-slate-500 uppercase font-bold mb-3">
+              Select Processes per Report
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {runs.map(r => {
+                const pids = extractPids(r);
+                const selectedPids = new Set(tab === 'cpu' ? (cpuSelById[r.id] || []) : (memSelById[r.id] || []));
+                const color = getColorForRun(r.id);
+                
+                return (
+                  <div key={r.id} className="border border-slate-200 rounded-xl p-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-2">
+                        <div className="w-2 h-2 rounded-full" style={{ backgroundColor: color }} />
+                        <span className="text-sm font-medium truncate">{r.title}</span>
+                      </div>
+                      <div className="flex gap-1">
+                        <button
+                          onClick={() => {
+                            const setter = tab === 'cpu' ? setCpuSelById : setMemSelById;
+                            setter(prev => ({ ...prev, [r.id]: pids }));
+                          }}
+                          className="text-xs px-2 py-1 text-slate-600 hover:bg-slate-100 rounded"
+                        >
+                          All
+                        </button>
+                        <button
+                          onClick={() => {
+                            const setter = tab === 'cpu' ? setCpuSelById : setMemSelById;
+                            setter(prev => ({ ...prev, [r.id]: [] }));
+                          }}
+                          className="text-xs px-2 py-1 text-slate-600 hover:bg-slate-100 rounded"
+                        >
+                          None
+                        </button>
+                      </div>
+                    </div>
+                    <div className="max-h-[200px] overflow-y-auto custom-scrollbar space-y-1">
+                      {pids.map(pid => {
+                        const checked = selectedPids.has(pid);
+                        return (
+                          <button
+                            key={pid}
+                            onClick={() => togglePid(r.id, pid)}
+                            className={`w-full flex items-center gap-2 px-2 py-1.5 rounded text-sm text-left transition-colors ${
+                              checked ? 'bg-indigo-50 text-indigo-700' : 'hover:bg-slate-50'
+                            }`}
+                          >
+                            <span className={`w-4 h-4 rounded border flex items-center justify-center ${
+                              checked ? 'bg-indigo-600 border-indigo-600' : 'border-slate-300'
+                            }`}>
+                              {checked && (
+                                <svg className="w-3 h-3 text-white" fill="currentColor" viewBox="0 0 20 20">
+                                  <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                                </svg>
+                              )}
+                            </span>
+                            <span className="truncate">{getProcLabel(r, pid)}</span>
+                            <span className="text-xs text-slate-400 ml-auto">{pid}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Comparison Chart */}
+          {alignedData.length > 0 && (
+            <LineChartComponent
+              data={alignedData}
+              dataKeys={chartDataKeys}
+              title={tab === 'cpu' ? 'CPU Usage Comparison' : 'Memory Usage Comparison'}
+              yLabel={tab === 'cpu' ? 'CPU (%)' : 'Memory (MB)'}
+              formatValue={(v) => v != null ? (tab === 'cpu' ? `${v.toFixed(1)}%` : `${v.toFixed(1)} MB`) : 'N/A'}
+            />
+          )}
+
+          {/* Per-Report Details */}
+          <div className="bg-white border border-slate-200 rounded-xl p-5 mb-6">
+            <div className="text-sm text-slate-500 uppercase font-bold mb-4">Report Details</div>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              {runs.map(r => {
+                const color = getColorForRun(r.id);
+                const meta = r.report?.meta || {};
+                const testCtx = meta.test_context || {};
+                const isBaseline = r.id === baselineId;
+                const stats = statsById[r.id] || {};
+                const baseStats = baselineId ? (statsById[baselineId] || {}) : {};
+                
+                return (
+                  <div 
+                    key={r.id} 
+                    className={`border rounded-xl p-4 ${isBaseline ? 'border-indigo-300 bg-indigo-50/30' : 'border-slate-200'}`}
+                  >
+                    <div className="flex items-center gap-3 mb-4">
+                      <div className="w-4 h-4 rounded-full shrink-0" style={{ backgroundColor: color }} />
+                      <div className="min-w-0 flex-1">
+                        <div className="font-semibold truncate">{r.title}</div>
+                        <div className="text-xs text-slate-500">{formatDate(r.reportDate)}</div>
+                      </div>
+                      {isBaseline && (
+                        <span className="text-xs px-2 py-1 bg-indigo-100 text-indigo-700 rounded-lg font-medium shrink-0">Baseline</span>
+                      )}
+                      <button
+                        onClick={() => onViewDetail && onViewDetail(r.id)}
+                        className="text-xs px-2 py-1 text-indigo-600 hover:bg-indigo-50 rounded transition-colors shrink-0"
+                        title="View full report details"
+                      >
+                        Details →
+                      </button>
+                    </div>
+                    
+                    {/* Quick Stats */}
+                    <div className="grid grid-cols-3 gap-3 mb-4">
+                      <div className="bg-slate-50 rounded-lg p-2 text-center">
+                        <div className="text-xs text-slate-500">Avg {tab === 'cpu' ? 'CPU' : 'Mem'}</div>
+                        <div className="font-semibold tabular-nums text-sm">
+                          {tab === 'cpu' ? formatCpu(stats.avg) : formatMem(stats.avg)}
+                        </div>
+                        {!isBaseline && baselineId && stats.avg != null && baseStats.avg != null && (
+                          <div className="mt-1">
+                            {deltaBadge(stats.avg - baseStats.avg, true)}
+                          </div>
+                        )}
+                      </div>
+                      <div className="bg-slate-50 rounded-lg p-2 text-center">
+                        <div className="text-xs text-slate-500">P95</div>
+                        <div className="font-semibold tabular-nums text-sm">
+                          {tab === 'cpu' ? formatCpu(stats.p95) : formatMem(stats.p95)}
+                        </div>
+                      </div>
+                      <div className="bg-slate-50 rounded-lg p-2 text-center">
+                        <div className="text-xs text-slate-500">Max</div>
+                        <div className="font-semibold tabular-nums text-sm">
+                          {tab === 'cpu' ? formatCpu(stats.max) : formatMem(stats.max)}
+                        </div>
+                      </div>
+                    </div>
+                    
+                    {/* Metadata */}
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+                      <div>
+                        <span className="text-slate-500">Platform:</span>{' '}
+                        <span className="font-medium">{r.platform || '—'}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-500">Mode:</span>{' '}
+                        <span className="font-medium">{r.mode || '—'}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-500">Duration:</span>{' '}
+                        <span className="font-medium">{formatDuration(r.durationSeconds)}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-500">Samples:</span>{' '}
+                        <span className="font-medium">{stats.samples || 0}</span>
+                      </div>
+                      {testCtx.scenario_name && (
+                        <div className="col-span-2">
+                          <span className="text-slate-500">Scenario:</span>{' '}
+                          <span className="font-medium">{testCtx.scenario_name}</span>
+                        </div>
+                      )}
+                      {testCtx.build_id && (
+                        <div className="col-span-2">
+                          <span className="text-slate-500">Build ID:</span>{' '}
+                          <span className="font-mono text-xs bg-slate-100 px-1.5 py-0.5 rounded">{testCtx.build_id}</span>
+                        </div>
+                      )}
+                    </div>
+                    
+                    {/* Tags */}
+                    {r.tags && r.tags.length > 0 && (
+                      <div className="mt-3 pt-3 border-t border-slate-100">
+                        <div className="flex flex-wrap gap-1">
+                          {(Array.isArray(r.tags) ? r.tags : []).map((tag, i) => (
+                            <span key={i} className="text-xs px-2 py-0.5 bg-slate-100 text-slate-600 rounded">
+                              {tag}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ========================
+    // App Component
+    // ========================
     function App() {
-      const [view, setView] = useState('list'); // 'list' | 'detail'
+      const [view, setView] = useState('list'); // 'list' | 'detail' | 'compare'
       const [selectedRunId, setSelectedRunId] = useState(null);
+      const [compareIds, setCompareIds] = useState([]);
+      const [compareContext, setCompareContext] = useState(null); // For bundle imports
 
       const handleSelect = (id) => {
         setSelectedRunId(id);
@@ -905,6 +1499,14 @@
       const handleBack = () => {
         setView('list');
         setSelectedRunId(null);
+        setCompareIds([]);
+        setCompareContext(null);
+      };
+
+      const handleCompare = (ids, context = null) => {
+        setCompareIds(ids);
+        setCompareContext(context);
+        setView('compare');
       };
 
       return (
@@ -921,10 +1523,22 @@
 
           {/* Content */}
           <main className="max-w-6xl mx-auto">
-            {view === 'list' ? (
-              <RunsList onSelect={handleSelect} />
-            ) : (
+            {view === 'list' && (
+              <RunsList onSelect={handleSelect} onCompare={handleCompare} />
+            )}
+            {view === 'detail' && (
               <RunDetail runId={selectedRunId} onBack={handleBack} />
+            )}
+            {view === 'compare' && (
+              <RunCompare 
+                runIds={compareIds} 
+                initialContext={compareContext} 
+                onBack={handleBack}
+                onViewDetail={(id) => {
+                  setSelectedRunId(id);
+                  setView('detail');
+                }}
+              />
             )}
           </main>
         </div>

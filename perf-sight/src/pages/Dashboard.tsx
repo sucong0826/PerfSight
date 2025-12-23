@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { Activity, ChevronDown, Folder, Plus } from 'lucide-react';
+import { Activity, ChevronDown, Folder, Plus, ExternalLink } from 'lucide-react';
+import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { PerformanceCharts, ProcessInfo } from '../components/Charts';
 import { ProcessList } from '../components/ProcessList';
 import { LogMetricSettings, LogMetricConfig } from '../components/LogMetricSettings';
@@ -782,6 +783,64 @@ export const Dashboard: React.FC = () => {
                 defaultOpen={false}
                 showOptionalBadge
               />
+            </div>
+          )}
+
+          {/* Float Widget Button - shown when collecting */}
+          {isCollecting && (
+            <div className="mb-4 bg-gradient-to-r from-indigo-500/10 to-violet-500/10 border border-indigo-200 dark:border-indigo-800 rounded-xl p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-sm font-medium text-indigo-700 dark:text-indigo-300">
+                    📍 Minimize and use Float Widget
+                  </div>
+                  <div className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                    Open a small always-on-top widget to monitor metrics while testing
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      // Check if widget window already exists
+                      const existing = await WebviewWindow.getByLabel('widget');
+                      if (existing) {
+                        await existing.setFocus();
+                        return;
+                      }
+                      
+                      // Create new widget window - compact size
+                      const webview = new WebviewWindow('widget', {
+                        url: '/widget',
+                        title: 'PerfSight Widget',
+                        width: 200,
+                        height: 128,
+                        resizable: false,
+                        alwaysOnTop: true,
+                        decorations: false,
+                        transparent: true,
+                        skipTaskbar: true,
+                        center: false,
+                        x: 50,
+                        y: 50,
+                      });
+                      
+                      webview.once('tauri://created', () => {
+                        console.log('Widget window created');
+                      });
+                      webview.once('tauri://error', (e) => {
+                        console.error('Failed to create widget window:', e);
+                      });
+                    } catch (e) {
+                      console.error('Failed to open widget:', e);
+                    }
+                  }}
+                  className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+                >
+                  <ExternalLink className="w-4 h-4" />
+                  Open Float Widget
+                </button>
+              </div>
             </div>
           )}
 
