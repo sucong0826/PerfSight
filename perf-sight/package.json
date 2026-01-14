@@ -1,7 +1,7 @@
 {
   "name": "perf-sight",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.8",
   "type": "module",
   "scripts": {
     "sidecar:ensure": "python src-tauri/python/build_sidecar.py",
