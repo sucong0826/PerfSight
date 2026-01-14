@@ -12,7 +12,6 @@ import {
   CheckSquare,
   Square,
   Download,
-  Upload,
 } from "lucide-react";
 
 interface ComparisonSummary {
