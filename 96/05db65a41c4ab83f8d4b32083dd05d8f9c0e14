@@ -1,0 +1,114 @@
+perf-sight/src/pages/ReportDetail.tsx
+  s_f7324e840bd8e9::t_babb33366e8422 217,223-233,857-858
+  s_f7324e840bd8e9::t_5c0e6e61edf846 4,860-861,871,873-877
+  s_f7324e840bd8e9::t_51d155d5f2c4f1 870,872
+  s_f7324e840bd8e9::t_d83c7cd65daa1f 1026
+perfsight-server/src/index.ts
+  s_f7324e840bd8e9::t_3e583abf59588d 56,60-68
+  s_f7324e840bd8e9::t_51d155d5f2c4f1 8,46,58,90
+  s_f7324e840bd8e9::t_f006423634d3f2 5,31,69-84
+  s_f7324e840bd8e9::t_4890d51fe2d388 14,16-30,33-34,37-45,47-48,94-97
+  s_f7324e840bd8e9::t_63616ece2454a9 15,88-89
+  s_f7324e840bd8e9::t_0643abce6e0a13 49-51
+  s_f7324e840bd8e9::t_b550ea018f04ad 32,59
+  s_f7324e840bd8e9::t_3287cbe6ae724c 57,85
+docs/perfsight-server-design.md
+  s_f7324e840bd8e9::t_af7a00b022f166 176
+perfsight-server/README.md
+  s_f7324e840bd8e9::t_5fcfb0d5197c2c 87
+  s_f7324e840bd8e9::t_951b94f240285d 39-40
+  s_f7324e840bd8e9::t_b6c5ec12a4477f 13-15,17,19,28-31,33-34,36-38,41-42,88
+  s_f7324e840bd8e9::t_04865eaabc4ccc 12,27,32,35
+perfsight-server/prisma/migrations/20261112000000_central_collection/migration.sql
+  s_f7324e840bd8e9::t_96ca3efc2dc2a5 1-9
+perfsight-server/src/routes/api.ts
+  s_f7324e840bd8e9::t_7478ee491cb975 3,81-84,231,233-236,239-240,243-253
+  s_f7324e840bd8e9::t_e38da0a4b94261 4,94,103-104,106-108,112-114,116-126,138-140,150-158,160-161
+  s_f7324e840bd8e9::t_90632600846154 528-530,602,618-619
+  s_f7324e840bd8e9::t_61c015b115a3ac 732-735
+  s_f7324e840bd8e9::t_aebd5cf12b8640 302-303,387,400-402
+  s_f7324e840bd8e9::t_6ae57b46f50234 197-198,206-220,306-310,639
+  s_f7324e840bd8e9::t_f944998aca6895 199-204
+  s_f7324e840bd8e9::t_92b84c989c4853 193,205,224
+  s_f7324e840bd8e9::t_7aa13f912ffc86 171,173,181,191-192,194-196,222-223,225-226,228-229,238,242
+  s_f7324e840bd8e9::t_bd9b43dfac6a34 304,314-327,330-336,340
+  s_f7324e840bd8e9::t_9d76b7d499450c 132
+  s_f7324e840bd8e9::t_b4152e0900a0fb 361-385
+  s_f7324e840bd8e9::t_aed7fc99c9edf0 490-492,540-542,561-563,590-592,621-623,805-807
+  s_f7324e840bd8e9::t_c2929d984f8774 170,180,221,230,237,241
+  s_f7324e840bd8e9::t_df39cfc00d1b0d 634-636,638,762-764
+  s_f7324e840bd8e9::t_2c7ad6c7dc2dfe 633,645
+  s_f7324e840bd8e9::t_6f45040a965fc4 162-165,502-504,552-554,774-776,778
+  s_f7324e840bd8e9::t_39233b160efda4 105,109-111,115,127-131,133-137
+  s_f7324e840bd8e9::t_ffc1e559f23bbd 647-650,653-660,675-676,678-684,708-711
+  s_f7324e840bd8e9::t_76120ed0e72eb4 227
+  s_f7324e840bd8e9::t_0e80787dd9ba60 141-149,159,731
+  s_f7324e840bd8e9::t_f8d5ef30b96cbf 337-339,346-347,349-355
+  s_f7324e840bd8e9::t_512fbf094093c2 395-397,418-419,425-448,453-454,466-468,487-488,608-609
+  s_f7324e840bd8e9::t_b9c9c7579ed5e4 232
+  s_f7324e840bd8e9::t_746dbd457fa2f1 166
+  s_f7324e840bd8e9::t_72532ecb103b8f 254
+perf-sight/src-tauri/src/lib.rs
+  s_f7324e840bd8e9::t_8716e0be45bd23 9,36,44-45
+perfsight-server/prisma/schema.prisma
+  s_f7324e840bd8e9::t_eafe1b83bef0c0 30-33,55-57
+perf-sight/src-tauri/src/commands.rs
+  s_f7324e840bd8e9::t_238bcbc4308060 54-101
+  s_f7324e840bd8e9::t_51d155d5f2c4f1 53
+perf-sight/src/pages/FloatingWidget.tsx
+  s_f7324e840bd8e9::t_2dcd8f80dea8ac 6,105-108
+perfsight-server/src/rateLimit.ts
+  s_f7324e840bd8e9::t_51d155d5f2c4f1 1-41
+perf-sight/src/pages/Dashboard.tsx
+  s_f7324e840bd8e9::t_6466fad4bc6cce 114-116,142-153,426
+  s_f7324e840bd8e9::t_51d155d5f2c4f1 428,476,1013
+  s_f7324e840bd8e9::t_58c33b0e9716df 471-472
+  s_f7324e840bd8e9::t_fbbe56f82c47c2 824,826-828
+  s_f7324e840bd8e9::t_55c1f810592ef0 4,9,117-123
+  s_f7324e840bd8e9::t_54599859f7bcd9 427,429-457,462-470,481
+  s_f7324e840bd8e9::t_0588337532aa41 461,473-475,477-480
+  s_f7324e840bd8e9::t_a0a1bdf8848c12 608-640,981-1012,1014-1018
+  s_f7324e840bd8e9::t_6993a9dac9b6b1 243-244
+  s_f7324e840bd8e9::t_52067abf46e22e 238-242,245,400
+perfsight-server/public/index.html
+  s_f7324e840bd8e9::t_5e7c98d4937eab 1118,1429-1432,1475-1482
+  s_f7324e840bd8e9::t_04865eaabc4ccc 1578,1581,1584-1587
+  s_f7324e840bd8e9::t_f34cead5791918 1565-1570
+  s_f7324e840bd8e9::t_8b43a70df328cc 31
+  s_f7324e840bd8e9::t_1e5099d40ed428 33-41,45,49,53,57,235,261
+  s_f7324e840bd8e9::t_80e6252f78eaa2 196-199,394-407,482-491
+perf-sight/src-tauri/tauri.conf.json
+  s_f7324e840bd8e9::t_999519a68c364b 18,37
+perfsight-server/package.json
+  s_f7324e840bd8e9::t_20ad53e15cd166 19-20
+docs/perfsight-server-progress.md
+  s_f7324e840bd8e9::t_04865eaabc4ccc 26
+  s_f7324e840bd8e9::t_7fca68647e6247 192
+perf-sight/src/utils/serverSync.ts
+  s_f7324e840bd8e9::t_2da765004398bf 170-175,177-179
+  s_f7324e840bd8e9::t_51d155d5f2c4f1 33,41,48,183
+  s_f7324e840bd8e9::t_4f07df6fefca7d 144,182
+  s_f7324e840bd8e9::t_9aacc5244067ac 161,163,184
+  s_f7324e840bd8e9::t_158c48c3aab979 26,74
+  s_f7324e840bd8e9::t_44e0a9d23efea1 81-82,84-87,89-98,112-116,120
+  s_f7324e840bd8e9::t_9db35ad8800a56 83,88
+  s_f7324e840bd8e9::t_9f4c2d6003435a 1-25,27-32,34-40,42-47,49-73,75-80,99-111,117-119,121-143,145-160,162,164-169,176,180-181,185-195
+perfsight-server/package-lock.json
+  s_f7324e840bd8e9::t_815bd5e9b69887 16-17,1865-1870
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "9605db65a41c4ab83f8d4b32083dd05d8f9c0e14",
+  "prompts": {},
+  "sessions": {
+    "s_f7324e840bd8e9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1ce55-711b-77f2-b0c3-01c33cc25509",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "Clever Su <clever.su@zoom.us>"
+    }
+  }
+}
