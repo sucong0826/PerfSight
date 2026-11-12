@@ -50,6 +50,55 @@ pub struct CollectionState {
     pub log_metrics: Arc<Mutex<Vec<(LogMetricConfig, Regex)>>>,
 }
 
+/// Server URL shared by desktop report uploads.
+pub struct ServerSyncState {
+    pub server_url: Mutex<String>,
+}
+
+impl ServerSyncState {
+    pub fn new() -> Self {
+        Self {
+            server_url: Mutex::new(String::new()),
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub struct ServerSyncConfig {
+    server_url: String,
+}
+
+#[tauri::command]
+pub fn get_server_sync_config(state: State<'_, ServerSyncState>) -> Result<ServerSyncConfig, String> {
+    Ok(ServerSyncConfig {
+        server_url: safe_lock(&state.server_url).clone(),
+    })
+}
+
+#[tauri::command]
+pub fn set_server_sync_config(
+    server_url: String,
+    state: State<'_, ServerSyncState>,
+) -> Result<ServerSyncConfig, String> {
+    let parsed = url::Url::parse(&server_url).map_err(|_| "Enter a valid PerfSight Server URL.")?;
+    if parsed.scheme() != "https:"
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err("Use an HTTPS Server URL without credentials, query parameters, or a fragment.".into());
+    }
+
+    let normalized_url = format!("{}{}", parsed.origin().ascii_serialization(), parsed.path().trim_end_matches('/'));
+    *safe_lock(&state.server_url) = normalized_url.clone();
+
+    Ok(ServerSyncConfig {
+        server_url: normalized_url,
+    })
+}
+
 impl CollectionState {
     pub fn new() -> Self {
         Self {

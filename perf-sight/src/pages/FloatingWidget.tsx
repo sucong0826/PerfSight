@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Square, Maximize2, GripHorizontal, X } from "lucide-react";
+import { stopCollectionAndSyncReport } from "../utils/serverSync";
 
 interface BatchMetric {
   timestamp: string;
@@ -101,7 +102,10 @@ export const FloatingWidget: React.FC = () => {
 
   const handleStop = async () => {
     try {
-      await invoke("stop_collection");
+      const result = await stopCollectionAndSyncReport();
+      if (result.uploadError) {
+        alert(`Report saved locally, but Server upload failed: ${result.uploadError}`);
+      }
       const mainWindow = await import("@tauri-apps/api/window").then(m => m.Window.getByLabel("main"));
       if (mainWindow) {
         await mainWindow.show();

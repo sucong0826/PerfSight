@@ -173,7 +173,7 @@ Server 以“Dataset”为基本落盘单位。
 ## 6. 安全与权限
 
 ### 6.1 MVP
-- **API Token**：Header `Authorization: Bearer <token>`（或 query token）
+- **访问控制**：个人/内网部署阶段暂不启用登录与 API Token；部署到不可信网络时应在网络层限制访问，后续再启用 API Token 或 OAuth。
 - **TLS**：ChromeOS 推荐 WSS/HTTPS
 - **CORS**：仅开放 Web UI 域名
 

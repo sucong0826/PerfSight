@@ -27,6 +27,10 @@ model Run {
   platform     String?  // e.g., "macos", "windows", "chromeos", "android", "ios"
   browser      String?  // e.g., "chrome-stable", "chrome-canary"
   mode         String?  // "system", "browser", "hybrid"
+  clientId     String?  // Stable installation ID from the PerfSight desktop client
+  deviceName   String?  // Device name captured by the collector
+  campaignId   String?  // Shared campaign identifier extracted from campaign:<id> tag
+  uploadKey    String?  @unique // Stable idempotency key for automatic retries
 
   // Tags (stored as JSON array string for SQLite compatibility)
   tags         String   @default("[]")
@@ -48,6 +52,9 @@ model Run {
   @@index([buildId])
   @@index([platform])
   @@index([createdAt])
+  @@index([clientId])
+  @@index([deviceName])
+  @@index([campaignId])
 }
 
 model Project {

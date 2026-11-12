@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, Link, useLocation, useNavigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
+import { getServerSyncConfig, saveServerSyncConfig, uploadReportDataset } from "../utils/serverSync";
 import {
   ArrowLeft,
   Loader,
@@ -213,13 +214,22 @@ export const ReportDetail: React.FC = () => {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
-  const [serverUrl, setServerUrl] = useState(() => 
-    localStorage.getItem("perfsight_server_url") || "http://localhost:3001"
-  );
+  const [serverUrl, setServerUrl] = useState(() => localStorage.getItem("perfsight_server_url") ?? "");
   const [showServerConfig, setShowServerConfig] = useState(false);
   const [isRenaming, setIsRenaming] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [isSavingTitle, setIsSavingTitle] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    getServerSyncConfig()
+      .then((config) => {
+        if (!active) return;
+        setServerUrl(config.serverUrl);
+      })
+      .catch((error) => console.error("Could not load Server settings", error));
+    return () => { active = false; };
+  }, []);
 
   useEffect(() => {
     if (!id) return;
@@ -844,34 +854,11 @@ export const ReportDetail: React.FC = () => {
     if (!report) return;
     try {
       setIsUploading(true);
-      
-      // Build the dataset in the same format as export_report_dataset
-      const dataset = {
-        schema_version: 1,
-        exported_at: new Date().toISOString(),
-        report: {
-          id: report.id,
-          created_at: report.created_at,
-          title: report.title,
-          metrics: report.metrics,
-          analysis: report.analysis,
-          meta: report.meta,
-        },
-      };
-
-      const response = await fetch(`${serverUrl}/api/v1/datasets`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(dataset),
+      const result = await uploadReportDataset(report, {
+        serverUrl,
       });
-
-      if (!response.ok) {
-        const err = await response.json().catch(() => ({}));
-        throw new Error(err.error || `Upload failed: ${response.status}`);
-      }
-
-      const result = await response.json();
-      alert(`✅ Uploaded to server!\nRun ID: ${result.run?.id}\n\nView at: ${serverUrl}`);
+      const state = result.duplicate ? "Already present on Server" : "Uploaded to Server";
+      alert(`✅ ${state}\nRun ID: ${result.run?.id || "unknown"}\n\nView at: ${serverUrl}`);
     } catch (err: any) {
       console.error("Upload failed", err);
       alert(`Failed to upload: ${err.message || err}`);
@@ -880,11 +867,14 @@ export const ReportDetail: React.FC = () => {
     }
   };
 
-  const handleSaveServerUrl = (url: string) => {
-    const trimmed = url.trim().replace(/\/+$/, ""); // Remove trailing slashes
-    setServerUrl(trimmed);
-    localStorage.setItem("perfsight_server_url", trimmed);
-    setShowServerConfig(false);
+  const handleSaveServerUrl = async (url: string) => {
+    try {
+      const saved = await saveServerSyncConfig(url);
+      setServerUrl(saved.serverUrl);
+      setShowServerConfig(false);
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Could not save Server settings.");
+    }
   };
 
   const handleDelete = async () => {
@@ -1033,7 +1023,7 @@ export const ReportDetail: React.FC = () => {
               type="text"
               defaultValue={serverUrl}
               className="w-full px-3 py-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100"
-              placeholder="http://localhost:3001"
+              placeholder="https://perfsight.example.com"
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
                   handleSaveServerUrl((e.target as HTMLInputElement).value);

@@ -28,23 +28,33 @@
     // ========================
     // API Client
     // ========================
+    sessionStorage.removeItem('perfsight_server_api_token');
     const api = {
+      async request(path, options = {}) {
+        const headers = new Headers(options.headers || {});
+        const response = await fetch(path, { ...options, headers });
+        if (!response.ok) {
+          const body = await response.json().catch(() => ({}));
+          throw new Error(body.error || `Server request failed (${response.status}).`);
+        }
+        return response;
+      },
       async getRuns(filters = {}) {
         const params = new URLSearchParams();
         Object.entries(filters).forEach(([k, v]) => { if (v) params.set(k, v); });
-        const res = await fetch(`/api/v1/runs?${params}`);
+        const res = await this.request(`/api/v1/runs?${params}`);
         return res.json();
       },
       async getRun(id) {
-        const res = await fetch(`/api/v1/runs/${id}`);
+        const res = await this.request(`/api/v1/runs/${encodeURIComponent(id)}`);
         return res.json();
       },
       async getFilters() {
-        const res = await fetch('/api/v1/filters');
+        const res = await this.request('/api/v1/filters');
         return res.json();
       },
       async deleteRun(id) {
-        const res = await fetch(`/api/v1/runs/${id}`, { method: 'DELETE' });
+        const res = await this.request(`/api/v1/runs/${encodeURIComponent(id)}`, { method: 'DELETE' });
         return res.json();
       },
     };
@@ -183,6 +193,10 @@
         setLoading(true);
         api.getRuns(filters)
           .then(data => setRuns(data.runs || []))
+          .catch(error => {
+            console.error('Loading runs failed:', error);
+            setRuns([]);
+          })
           .finally(() => setLoading(false));
       };
 
@@ -218,7 +232,7 @@
           // Check if it's a comparison bundle
           if (data.bundle_type === 'comparison' && Array.isArray(data.reports)) {
             // Import as bundle
-            const res = await fetch('/api/v1/bundles', {
+            const res = await api.request('/api/v1/bundles', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: text,
@@ -244,7 +258,7 @@
             }
           } else if (data.schema_version === 1 && data.report) {
             // Single dataset import
-            const res = await fetch('/api/v1/datasets', {
+            const res = await api.request('/api/v1/datasets', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: text,
@@ -377,6 +391,20 @@
               value={filters.buildId || ''}
               onChange={e => setFilters({...filters, buildId: e.target.value})}
             />
+            <input
+              type="text"
+              placeholder="Search by device..."
+              className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm w-48"
+              value={filters.deviceName || ''}
+              onChange={e => setFilters({...filters, deviceName: e.target.value})}
+            />
+            <input
+              type="text"
+              placeholder="Campaign ID..."
+              className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm w-40"
+              value={filters.campaignId || ''}
+              onChange={e => setFilters({...filters, campaignId: e.target.value})}
+            />
             {Object.values(filters).some(Boolean) && (
               <button 
                 onClick={() => setFilters({})}
@@ -449,6 +477,16 @@
                             {run.mode && (
                               <span className="px-2 py-0.5 bg-amber-100 text-amber-700 rounded text-xs">
                                 {run.mode}
+                              </span>
+                            )}
+                            {run.deviceName && (
+                              <span className="px-2 py-0.5 bg-cyan-100 text-cyan-800 rounded text-xs">
+                                {run.deviceName}
+                              </span>
+                            )}
+                            {run.campaignId && (
+                              <span className="px-2 py-0.5 bg-violet-100 text-violet-700 rounded text-xs">
+                                campaign: {run.campaignId}
                               </span>
                             )}
                           </div>
@@ -1077,7 +1115,7 @@
 
       const chartDataKeys = runs.map(r => ({
         key: `${tab}_${r.id}`,
-        label: r.title,
+        label: r.deviceName ? `${r.title} · ${r.deviceName}` : r.title,
         color: getColorForRun(r.id),
       }));
 
@@ -1388,7 +1426,10 @@
                       <div className="w-4 h-4 rounded-full shrink-0" style={{ backgroundColor: color }} />
                       <div className="min-w-0 flex-1">
                         <div className="font-semibold truncate">{r.title}</div>
-                        <div className="text-xs text-slate-500">{formatDate(r.reportDate)}</div>
+                        <div className="text-xs text-slate-500 truncate">
+                          {r.deviceName || 'Unknown device'} · {formatDate(r.reportDate)}
+                          {r.campaignId ? ` · campaign:${r.campaignId}` : ''}
+                        </div>
                       </div>
                       {isBaseline && (
                         <span className="text-xs px-2 py-1 bg-indigo-100 text-indigo-700 rounded-lg font-medium shrink-0">Baseline</span>
@@ -1431,6 +1472,14 @@
                     
                     {/* Metadata */}
                     <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+                      <div>
+                        <span className="text-slate-500">Device:</span>{' '}
+                        <span className="font-medium">{r.deviceName || meta.env?.device_name || '—'}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-500">Campaign:</span>{' '}
+                        <span className="font-medium">{r.campaignId || '—'}</span>
+                      </div>
                       <div>
                         <span className="text-slate-500">Platform:</span>{' '}
                         <span className="font-medium">{r.platform || '—'}</span>
@@ -1513,26 +1562,29 @@
         <div className="min-h-screen">
           {/* Header */}
           <header className="bg-white border-b border-slate-200 px-6 py-4">
-            <div className="flex items-center gap-3">
-              <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center">
-                <span className="text-white font-bold text-sm">P</span>
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center">
+                  <span className="text-white font-bold text-sm">P</span>
+                </div>
+                <h1 className="text-lg font-semibold text-slate-800">PerfSight Server</h1>
               </div>
-              <h1 className="text-lg font-semibold text-slate-800">PerfSight Server</h1>
             </div>
           </header>
 
           {/* Content */}
           <main className="max-w-6xl mx-auto">
             {view === 'list' && (
-              <RunsList onSelect={handleSelect} onCompare={handleCompare} />
+              <RunsList key="runs" onSelect={handleSelect} onCompare={handleCompare} />
             )}
             {view === 'detail' && (
-              <RunDetail runId={selectedRunId} onBack={handleBack} />
+              <RunDetail key={`detail-${selectedRunId}`} runId={selectedRunId} onBack={handleBack} />
             )}
             {view === 'compare' && (
-              <RunCompare 
-                runIds={compareIds} 
-                initialContext={compareContext} 
+              <RunCompare
+                key={`compare-${compareIds.join('-')}`}
+                runIds={compareIds}
+                initialContext={compareContext}
                 onBack={handleBack}
                 onViewDetail={(id) => {
                   setSelectedRunId(id);

@@ -23,7 +23,7 @@
 | Comparison Bundle 导入 | ✅ 完成 | Client/Server 导入 bundle，自动跳转 Compare |
 | Desktop - Upload to Server | ✅ 完成 | ReportDetail 页面增加上传按钮 |
 | WebSocket Ingest (ChromeOS) | ⏳ 待开发 | Phase S1 优先 |
-| Token 鉴权 | ⏳ 待开发 | |
+| Token 鉴权 | ⏸️ 暂不启用 | 当前个人/内网部署直接开放 Web UI 和 API |
 
 ---
 
@@ -189,7 +189,7 @@ npm run tauri dev
 
 ### Phase S1 剩余
 - [ ] WebSocket Ingest (`/ws`) - ChromeOS Extension 实时上报
-- [ ] Token 鉴权（静态 token）
+- Token 鉴权暂缓：当前个人/内网部署开放访问；需要多用户或公网部署时再评估。
 
 ### Phase S2
 - [x] ~~Web UI - Compare 页面~~ ✅ 已完成

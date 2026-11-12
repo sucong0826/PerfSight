@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { prisma } from "../db.js";
-import { v4 as uuidv4 } from "uuid";
+import { createHash } from "node:crypto";
+import { z } from "zod";
 
 export const apiRouter = Router();
 
@@ -77,6 +78,10 @@ interface ReportMeta {
     alias?: string;
     proc_type?: string;
   }>;
+  source?: {
+    client_id?: string;
+    client_type?: string;
+  };
   [key: string]: any;
 }
 
@@ -86,7 +91,7 @@ interface ReportDetail {
   title: string;
   metrics: BatchMetric[];
   analysis?: Analysis;
-  meta?: ReportMeta;
+  meta?: ReportMeta | null;
 }
 
 interface ReportDatasetV1 {
@@ -95,21 +100,85 @@ interface ReportDatasetV1 {
   report: ReportDetail;
 }
 
+const dateTimeSchema = z.string().max(64).refine((value) => Number.isFinite(Date.parse(value)));
+const nonNegativeInteger = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+const cpuMetric = z.number().finite().min(0).max(100_000);
+const metricPointSchema = z.object({
+  timestamp: dateTimeSchema,
+  pid: z.number().int().nonnegative().max(4_294_967_295),
+  cpu_usage: cpuMetric.optional(),
+  cpu_os_usage: cpuMetric.optional(),
+  cpu_chrome_usage: cpuMetric.nullable().optional(),
+  memory_rss: nonNegativeInteger.optional(),
+  memory_footprint: nonNegativeInteger.nullable().optional(),
+  memory_private: nonNegativeInteger.nullable().optional(),
+  gpu_usage: cpuMetric.nullable().optional(),
+  js_heap_size: nonNegativeInteger.nullable().optional(),
+  custom_metrics: z.record(z.string().max(128), z.number().finite()).nullable().optional(),
+}).passthrough();
+const metricBatchSchema = z.object({
+  timestamp: dateTimeSchema,
+  metrics: z.record(z.string().regex(/^\d{1,10}$/), metricPointSchema)
+    .refine((metrics) => Object.keys(metrics).length <= 512),
+}).passthrough();
+const reportSchema = z.object({
+  id: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  created_at: dateTimeSchema,
+  title: z.string().max(500).refine((value) => !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value)),
+  metrics: z.array(metricBatchSchema).max(250_000).superRefine((batches, context) => {
+    let pointCount = 0;
+    for (const batch of batches) {
+      pointCount += Object.keys(batch.metrics).length;
+      if (pointCount > 500_000) {
+        context.addIssue({ code: "custom", message: "Dataset exceeds the metric point limit." });
+        return;
+      }
+    }
+  }),
+  analysis: z.record(z.string(), z.unknown()).nullable().optional(),
+  meta: z.record(z.string(), z.unknown()).nullable().optional(),
+}).passthrough();
+const reportSelectionsSchema = z.record(
+  z.string().regex(/^\d{1,16}$/),
+  z.array(z.number().int().nonnegative().max(4_294_967_295)).max(512),
+).refine((selections) => Object.keys(selections).length <= 500);
+const comparisonContextSchema = z.object({
+  baseline_original_id: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable().optional(),
+  cpu_selections_by_id: reportSelectionsSchema.optional(),
+  mem_selections_by_id: reportSelectionsSchema.optional(),
+}).passthrough();
+const datasetSchema = z.object({
+  schema_version: z.literal(1),
+  exported_at: dateTimeSchema,
+  report: reportSchema,
+}).passthrough();
+const comparisonBundleSchema = z.object({
+  schema_version: z.literal(1),
+  bundle_type: z.literal("comparison"),
+  exported_at: dateTimeSchema,
+  comparison_context: comparisonContextSchema.optional(),
+  reports: z.array(reportSchema).min(2).max(500),
+}).passthrough();
+const compareRequestSchema = z.object({
+  ids: z.array(z.string().uuid()).min(2).max(100),
+}).strict();
+const runIdSchema = z.string().uuid();
+
 // ====================
 // Helper Functions
 // ====================
-function extractRelease(meta?: ReportMeta): string | null {
-  const tags = meta?.test_context?.tags || [];
+function extractRelease(meta?: ReportMeta | null): string | null {
+  const tags = extractTags(meta);
   for (const tag of tags) {
-    if (typeof tag === "string" && tag.startsWith("release:")) {
+    if (tag.startsWith("release:")) {
       return tag.slice(8);
     }
   }
   return null;
 }
 
-function extractPlatform(meta?: ReportMeta): string | null {
-  const os = meta?.env?.os?.toLowerCase() || "";
+function extractPlatform(meta?: ReportMeta | null): string | null {
+  const os = safeMetaString(meta?.env?.os, 80)?.toLowerCase() || "";
   if (os.includes("mac") || os.includes("darwin")) return "macos";
   if (os.includes("win")) return "windows";
   if (os.includes("linux")) return "linux";
@@ -117,6 +186,70 @@ function extractPlatform(meta?: ReportMeta): string | null {
   if (os.includes("android")) return "android";
   if (os.includes("ios")) return "ios";
   return os || null;
+}
+
+function safeMetaString(value: unknown, maxLength = 120): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.slice(0, maxLength * 2).trim().replace(/[\u0000-\u001f\u007f]/g, "").slice(0, maxLength);
+  return normalized || null;
+}
+
+function sanitizeReport(report: ReportDetail): ReportDetail {
+  const meta = report.meta;
+  if (!meta) return report;
+  if (!Array.isArray(meta.process_snapshot)) {
+    return "process_snapshot" in meta
+      ? { ...report, meta: { ...meta, process_snapshot: [] } }
+      : report;
+  }
+  const processSnapshot = meta.process_snapshot.slice(0, 512).flatMap((entry) => {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return [];
+    const process = entry as Record<string, unknown>;
+    if (typeof process.pid !== "number" || !Number.isSafeInteger(process.pid) || process.pid < 0) return [];
+    const sanitized: { pid: number; name?: string; alias?: string; proc_type?: string } = { pid: process.pid };
+    const name = safeMetaString(process.name, 120);
+    const alias = safeMetaString(process.alias, 120);
+    const processType = safeMetaString(process.proc_type, 40);
+    if (name) sanitized.name = name;
+    if (alias) sanitized.alias = alias;
+    if (processType) sanitized.proc_type = processType;
+    return [sanitized];
+  });
+  return { ...report, meta: { ...meta, process_snapshot: processSnapshot } };
+}
+
+function extractTags(meta?: ReportMeta | null): string[] {
+  const rawTags = meta?.test_context?.tags;
+  if (!Array.isArray(rawTags)) return [];
+  return rawTags.slice(0, 100)
+    .filter((tag): tag is string => typeof tag === "string")
+    .map((tag) => safeMetaString(tag, 120))
+    .filter((tag): tag is string => tag !== null);
+}
+
+function extractClientId(meta?: ReportMeta | null): string | null {
+  const candidate = meta?.source?.client_id;
+  return typeof candidate === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(candidate)
+    ? candidate.toLowerCase()
+    : null;
+}
+
+function extractDeviceName(meta?: ReportMeta | null): string | null {
+  return safeMetaString(meta?.env?.device_name, 120);
+}
+
+function extractCampaignId(meta?: ReportMeta | null): string | null {
+  for (const tag of extractTags(meta)) {
+    const match = /^campaign:([a-z0-9._-]{1,80})$/i.exec(tag.trim());
+    if (match) return match[1];
+  }
+  return null;
+}
+
+function createUploadKey(clientId: string, report: ReportDetail): string {
+  return createHash("sha256")
+    .update(`${clientId}:${report.id}:${new Date(report.created_at).toISOString()}`, "utf8")
+    .digest("hex");
 }
 
 function computeStats(metrics: BatchMetric[]): {
@@ -166,71 +299,92 @@ function computeStats(metrics: BatchMetric[]): {
  */
 apiRouter.post("/datasets", async (req, res) => {
   try {
-    const dataset = req.body as ReportDatasetV1;
-
-    // Validate
-    if (!dataset || dataset.schema_version !== 1) {
-      return res.status(400).json({ error: "Invalid dataset: schema_version must be 1" });
+    const validation = datasetSchema.safeParse(req.body);
+    if (!validation.success) {
+      return res.status(400).json({ error: "Invalid dataset. Expected schema_version 1 and a valid report with bounded metrics." });
     }
-    if (!dataset.report) {
-      return res.status(400).json({ error: "Invalid dataset: missing report" });
-    }
+    const parsedDataset = validation.data as unknown as ReportDatasetV1;
+    const dataset: ReportDatasetV1 = {
+      ...parsedDataset,
+      report: sanitizeReport(parsedDataset.report),
+    };
 
     const report = dataset.report;
     const meta = report.meta;
+    const clientId = extractClientId(meta);
+    const deviceName = extractDeviceName(meta);
+    const campaignId = extractCampaignId(meta);
+    const uploadKey = clientId ? createUploadKey(clientId, report) : null;
 
-    // Check for duplicate import (same original ID + same reportDate)
-    const existingRun = await prisma.run.findFirst({
-      where: {
-        originalId: report.id,
-        reportDate: new Date(report.created_at),
-      },
-    });
+    // Stable source-aware key makes retries safe and allows different clients to reuse local IDs.
+    const existingRun = uploadKey
+      ? await prisma.run.findUnique({ where: { uploadKey } })
+      : await prisma.run.findFirst({
+          where: {
+            originalId: report.id,
+            reportDate: new Date(report.created_at),
+          },
+        });
 
     if (existingRun) {
-      return res.status(409).json({
-        error: "Duplicate dataset",
-        message: `This report has already been imported (existing ID: ${existingRun.id})`,
-        existingRunId: existingRun.id,
+      return res.status(200).json({
+        success: true,
+        duplicate: true,
+        run: {
+          id: existingRun.id,
+          title: existingRun.title,
+          createdAt: existingRun.createdAt,
+          clientId: existingRun.clientId,
+          deviceName: existingRun.deviceName,
+          campaignId: existingRun.campaignId,
+        },
       });
     }
 
     // Extract indexed fields
     const release = extractRelease(meta);
-    const scenario = meta?.test_context?.scenario_name || null;
-    const buildId = meta?.test_context?.build_id || null;
+    const scenario = safeMetaString(meta?.test_context?.scenario_name);
+    const buildId = safeMetaString(meta?.test_context?.build_id);
     const platform = extractPlatform(meta);
-    const browser = meta?.env?.browser_channel || null;
-    const mode = meta?.collection?.mode || null;
-    const tags = JSON.stringify(meta?.test_context?.tags || []);
-    const durationSeconds = meta?.collection?.duration_seconds || null;
+    const browser = safeMetaString(meta?.env?.browser_channel);
+    const mode = safeMetaString(meta?.collection?.mode, 40);
+    const tags = JSON.stringify(extractTags(meta));
+    const rawDuration = meta?.collection?.duration_seconds;
+    const durationSeconds = typeof rawDuration === "number" && Number.isSafeInteger(rawDuration) && rawDuration >= 0
+      ? rawDuration
+      : null;
 
     // Compute stats
     const stats = computeStats(report.metrics || []);
 
     // Store
-    const run = await prisma.run.create({
-      data: {
-        originalId: report.id,
-        title: report.title || `Report ${report.id}`,
-        reportDate: new Date(report.created_at),
-        release,
-        scenario,
-        buildId,
-        platform,
-        browser,
-        mode,
-        tags,
-        durationSeconds,
-        datasetJson: JSON.stringify(dataset),
-        avgCpu: stats.avgCpu,
-        avgMemMb: stats.avgMemMb,
-        p95Cpu: stats.p95Cpu,
-        p95MemMb: stats.p95MemMb,
-      },
-    });
+    const runData = {
+      originalId: report.id,
+      title: report.title || `Report ${report.id}`,
+      reportDate: new Date(report.created_at),
+      release,
+      scenario,
+      buildId,
+      platform,
+      browser,
+      mode,
+      clientId,
+      deviceName,
+      campaignId,
+      uploadKey,
+      tags,
+      durationSeconds,
+      datasetJson: JSON.stringify(dataset),
+      avgCpu: stats.avgCpu,
+      avgMemMb: stats.avgMemMb,
+      p95Cpu: stats.p95Cpu,
+      p95MemMb: stats.p95MemMb,
+    };
+    const run = uploadKey
+      ? await prisma.run.upsert({ where: { uploadKey }, create: runData, update: {} })
+      : await prisma.run.create({ data: runData });
 
-    console.log(`✅ Uploaded run: ${run.id} (${run.title})`);
+    console.log(`Uploaded run ${run.id}`);
 
     res.status(201).json({
       success: true,
@@ -238,11 +392,14 @@ apiRouter.post("/datasets", async (req, res) => {
         id: run.id,
         title: run.title,
         createdAt: run.createdAt,
+        clientId: run.clientId,
+        deviceName: run.deviceName,
+        campaignId: run.campaignId,
       },
     });
-  } catch (err) {
-    console.error("Upload failed:", err);
-    res.status(500).json({ error: "Upload failed", details: String(err) });
+  } catch {
+    console.error("Upload failed.");
+    res.status(500).json({ error: "Upload failed." });
   }
 });
 
@@ -258,22 +415,43 @@ apiRouter.get("/runs", async (req, res) => {
       buildId,
       platform,
       tags,
+      campaignId,
+      deviceName,
       limit = "50",
       offset = "0",
     } = req.query;
 
     const where: any = {};
-    if (release) where.release = String(release);
-    if (scenario) where.scenario = { contains: String(scenario) };
-    if (buildId) where.buildId = { contains: String(buildId) };
-    if (platform) where.platform = String(platform);
-    if (tags) where.tags = { contains: String(tags) };
+    const filterText = (value: unknown): string | null => {
+      if (typeof value !== "string") return null;
+      const normalized = value.trim();
+      return normalized && normalized.length <= 120 ? normalized : null;
+    };
+    const releaseValue = filterText(release);
+    const scenarioValue = filterText(scenario);
+    const buildIdValue = filterText(buildId);
+    const platformValue = filterText(platform);
+    const tagsValue = filterText(tags);
+    const campaignValue = filterText(campaignId);
+    const deviceValue = filterText(deviceName);
+    if (releaseValue) where.release = releaseValue;
+    if (scenarioValue) where.scenario = { contains: scenarioValue };
+    if (buildIdValue) where.buildId = { contains: buildIdValue };
+    if (platformValue) where.platform = platformValue;
+    if (tagsValue) where.tags = { contains: tagsValue };
+    if (campaignValue) where.campaignId = { contains: campaignValue };
+    if (deviceValue) where.deviceName = { contains: deviceValue };
+
+    const parsedLimit = Number(limit);
+    const parsedOffset = Number(offset);
+    const safeLimit = Number.isInteger(parsedLimit) ? Math.max(1, Math.min(parsedLimit, 200)) : 50;
+    const safeOffset = Number.isInteger(parsedOffset) ? Math.max(0, Math.min(parsedOffset, 1_000_000)) : 0;
 
     const runs = await prisma.run.findMany({
       where,
       orderBy: { createdAt: "desc" },
-      take: Math.min(Number(limit), 200),
-      skip: Number(offset),
+      take: safeLimit,
+      skip: safeOffset,
       select: {
         id: true,
         createdAt: true,
@@ -285,6 +463,9 @@ apiRouter.get("/runs", async (req, res) => {
         platform: true,
         browser: true,
         mode: true,
+        clientId: true,
+        deviceName: true,
+        campaignId: true,
         tags: true,
         durationSeconds: true,
         avgCpu: true,
@@ -303,12 +484,12 @@ apiRouter.get("/runs", async (req, res) => {
         tags: JSON.parse(r.tags || "[]"),
       })),
       total,
-      limit: Number(limit),
-      offset: Number(offset),
+      limit: safeLimit,
+      offset: safeOffset,
     });
-  } catch (err) {
-    console.error("List runs failed:", err);
-    res.status(500).json({ error: "List runs failed", details: String(err) });
+  } catch {
+    console.error("List runs failed.");
+    res.status(500).json({ error: "List runs failed." });
   }
 });
 
@@ -318,7 +499,9 @@ apiRouter.get("/runs", async (req, res) => {
  */
 apiRouter.get("/runs/:id", async (req, res) => {
   try {
-    const { id } = req.params;
+    const parsedId = runIdSchema.safeParse(req.params.id);
+    if (!parsedId.success) return res.status(400).json({ error: "Invalid run ID." });
+    const id = parsedId.data;
 
     const run = await prisma.run.findUnique({
       where: { id },
@@ -342,6 +525,9 @@ apiRouter.get("/runs/:id", async (req, res) => {
       platform: run.platform,
       browser: run.browser,
       mode: run.mode,
+      clientId: run.clientId,
+      deviceName: run.deviceName,
+      campaignId: run.campaignId,
       tags: JSON.parse(run.tags || "[]"),
       durationSeconds: run.durationSeconds,
       avgCpu: run.avgCpu,
@@ -351,9 +537,9 @@ apiRouter.get("/runs/:id", async (req, res) => {
       // Full report data from dataset
       report: dataset.report,
     });
-  } catch (err) {
-    console.error("Get run failed:", err);
-    res.status(500).json({ error: "Get run failed", details: String(err) });
+  } catch {
+    console.error("Get run failed.");
+    res.status(500).json({ error: "Get run failed." });
   }
 });
 
@@ -363,16 +549,18 @@ apiRouter.get("/runs/:id", async (req, res) => {
  */
 apiRouter.delete("/runs/:id", async (req, res) => {
   try {
-    const { id } = req.params;
+    const parsedId = runIdSchema.safeParse(req.params.id);
+    if (!parsedId.success) return res.status(400).json({ error: "Invalid run ID." });
+    const id = parsedId.data;
 
     await prisma.run.delete({
       where: { id },
     });
 
     res.json({ success: true });
-  } catch (err) {
-    console.error("Delete run failed:", err);
-    res.status(500).json({ error: "Delete run failed", details: String(err) });
+  } catch {
+    console.error("Delete run failed.");
+    res.status(500).json({ error: "Delete run failed." });
   }
 });
 
@@ -399,9 +587,9 @@ apiRouter.get("/tags", async (req, res) => {
       .sort((a, b) => b.count - a.count);
 
     res.json({ tags: result });
-  } catch (err) {
-    console.error("Get tags failed:", err);
-    res.status(500).json({ error: "Get tags failed", details: String(err) });
+  } catch {
+    console.error("Get tags failed.");
+    res.status(500).json({ error: "Get tags failed." });
   }
 });
 
@@ -411,12 +599,14 @@ apiRouter.get("/tags", async (req, res) => {
  */
 apiRouter.get("/filters", async (req, res) => {
   try {
-    const [releases, scenarios, platforms, browsers, modes] = await Promise.all([
+    const [releases, scenarios, platforms, browsers, modes, devices, campaigns] = await Promise.all([
       prisma.run.findMany({ distinct: ["release"], where: { release: { not: null } }, select: { release: true } }),
       prisma.run.findMany({ distinct: ["scenario"], where: { scenario: { not: null } }, select: { scenario: true } }),
       prisma.run.findMany({ distinct: ["platform"], where: { platform: { not: null } }, select: { platform: true } }),
       prisma.run.findMany({ distinct: ["browser"], where: { browser: { not: null } }, select: { browser: true } }),
       prisma.run.findMany({ distinct: ["mode"], where: { mode: { not: null } }, select: { mode: true } }),
+      prisma.run.findMany({ distinct: ["deviceName"], where: { deviceName: { not: null } }, select: { deviceName: true } }),
+      prisma.run.findMany({ distinct: ["campaignId"], where: { campaignId: { not: null } }, select: { campaignId: true } }),
     ]);
 
     res.json({
@@ -425,10 +615,12 @@ apiRouter.get("/filters", async (req, res) => {
       platforms: platforms.map((r) => r.platform).filter(Boolean),
       browsers: browsers.map((r) => r.browser).filter(Boolean),
       modes: modes.map((r) => r.mode).filter(Boolean),
+      devices: devices.map((r) => r.deviceName).filter(Boolean),
+      campaigns: campaigns.map((r) => r.campaignId).filter(Boolean),
     });
-  } catch (err) {
-    console.error("Get filters failed:", err);
-    res.status(500).json({ error: "Get filters failed", details: String(err) });
+  } catch {
+    console.error("Get filters failed.");
+    res.status(500).json({ error: "Get filters failed." });
   }
 });
 
@@ -438,33 +630,34 @@ apiRouter.get("/filters", async (req, res) => {
  */
 apiRouter.post("/bundles", async (req, res) => {
   try {
-    const bundle = req.body;
-
-    // Validate bundle format
-    if (!bundle || bundle.schema_version !== 1) {
-      return res.status(400).json({ error: "Invalid bundle: schema_version must be 1" });
+    const bundleInput: unknown = req.body;
+    const validation = comparisonBundleSchema.safeParse(bundleInput);
+    if (!validation.success) {
+      return res.status(400).json({ error: "Invalid comparison bundle." });
     }
-    if (bundle.bundle_type !== "comparison") {
-      return res.status(400).json({ error: "Invalid bundle: bundle_type must be 'comparison'" });
-    }
-    if (!Array.isArray(bundle.reports) || bundle.reports.length < 2) {
-      return res.status(400).json({ error: "Invalid bundle: at least 2 reports required" });
-    }
+    const bundle = validation.data;
+    const reports = (bundle.reports as unknown as ReportDetail[]).map(sanitizeReport);
 
     const importedRuns: Array<{ id: string; originalId: number; title: string }> = [];
     const idMapping: Record<number, string> = {}; // originalId -> new server ID
 
     // Import each report
-    for (const report of bundle.reports) {
+    for (const report of reports) {
       const meta = report.meta;
+      const clientId = extractClientId(meta);
+      const deviceName = extractDeviceName(meta);
+      const campaignId = extractCampaignId(meta);
+      const uploadKey = clientId ? createUploadKey(clientId, report) : null;
 
       // Check for existing import
-      const existingRun = await prisma.run.findFirst({
-        where: {
-          originalId: report.id,
-          reportDate: new Date(report.created_at),
-        },
-      });
+      const existingRun = uploadKey
+        ? await prisma.run.findUnique({ where: { uploadKey } })
+        : await prisma.run.findFirst({
+            where: {
+              originalId: report.id,
+              reportDate: new Date(report.created_at),
+            },
+          });
 
       if (existingRun) {
         // Already exists, use existing ID
@@ -479,13 +672,16 @@ apiRouter.post("/bundles", async (req, res) => {
 
       // Extract indexed fields
       const release = extractRelease(meta);
-      const scenario = meta?.test_context?.scenario_name || null;
-      const buildId = meta?.test_context?.build_id || null;
+      const scenario = safeMetaString(meta?.test_context?.scenario_name);
+      const buildId = safeMetaString(meta?.test_context?.build_id);
       const platform = extractPlatform(meta);
-      const browser = meta?.env?.browser_channel || null;
-      const mode = meta?.collection?.mode || null;
-      const tags = JSON.stringify(meta?.test_context?.tags || []);
-      const durationSeconds = meta?.collection?.duration_seconds || null;
+      const browser = safeMetaString(meta?.env?.browser_channel);
+      const mode = safeMetaString(meta?.collection?.mode, 40);
+      const tags = JSON.stringify(extractTags(meta));
+      const rawDuration = meta?.collection?.duration_seconds;
+      const durationSeconds = typeof rawDuration === "number" && Number.isSafeInteger(rawDuration) && rawDuration >= 0
+        ? rawDuration
+        : null;
 
       // Compute stats
       const stats = computeStats(report.metrics || []);
@@ -509,6 +705,10 @@ apiRouter.post("/bundles", async (req, res) => {
           platform,
           browser,
           mode,
+          clientId,
+          deviceName,
+          campaignId,
+          uploadKey,
           tags,
           durationSeconds,
           datasetJson: JSON.stringify(singleDataset),
@@ -528,9 +728,11 @@ apiRouter.post("/bundles", async (req, res) => {
     }
 
     // Map comparison context to new IDs
-    const comparisonContext = bundle.comparison_context || {};
-    const baselineOriginalId = comparisonContext.baseline_original_id;
-    const newBaselineId = baselineOriginalId != null ? idMapping[baselineOriginalId] : null;
+    const comparisonContext = bundle.comparison_context ?? {};
+    const baselineOriginalId = Number(comparisonContext.baseline_original_id);
+    const newBaselineId = Number.isSafeInteger(baselineOriginalId)
+      ? idMapping[baselineOriginalId] ?? null
+      : null;
 
     // Map process selections to new IDs
     const mapSelections = (selections: Record<string, number[]> | undefined) => {
@@ -557,9 +759,9 @@ apiRouter.post("/bundles", async (req, res) => {
         memSelections: mapSelections(comparisonContext.mem_selections_by_id),
       },
     });
-  } catch (err) {
-    console.error("Bundle import failed:", err);
-    res.status(500).json({ error: "Bundle import failed", details: String(err) });
+  } catch {
+    console.error("Bundle import failed.");
+    res.status(500).json({ error: "Bundle import failed." });
   }
 });
 
@@ -569,11 +771,11 @@ apiRouter.post("/bundles", async (req, res) => {
  */
 apiRouter.post("/compare", async (req, res) => {
   try {
-    const { ids } = req.body as { ids: string[] };
-
-    if (!ids || !Array.isArray(ids) || ids.length < 2) {
-      return res.status(400).json({ error: "At least 2 run IDs required" });
+    const validation = compareRequestSchema.safeParse(req.body);
+    if (!validation.success) {
+      return res.status(400).json({ error: "At least two valid run IDs are required." });
     }
+    const { ids } = validation.data;
 
     const runs = await prisma.run.findMany({
       where: { id: { in: ids } },
@@ -600,9 +802,9 @@ apiRouter.post("/compare", async (req, res) => {
     });
 
     res.json({ runs: result });
-  } catch (err) {
-    console.error("Compare runs failed:", err);
-    res.status(500).json({ error: "Compare runs failed", details: String(err) });
+  } catch {
+    console.error("Compare runs failed.");
+    res.status(500).json({ error: "Compare runs failed." });
   }
 });
 

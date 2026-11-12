@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { Activity, ChevronDown, Folder, Plus, ExternalLink } from 'lucide-react';
+import { Activity, ChevronDown, Folder, Plus, ExternalLink, Settings } from 'lucide-react';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { PerformanceCharts, ProcessInfo } from '../components/Charts';
 import { ProcessList } from '../components/ProcessList';
 import { LogMetricSettings, LogMetricConfig } from '../components/LogMetricSettings';
+import { getServerSyncConfig, saveServerSyncConfig, stopCollectionAndSyncReport, uploadLocalReport } from '../utils/serverSync';
 
 interface FolderInfo {
   path: string;
@@ -110,6 +111,16 @@ export const Dashboard: React.FC = () => {
   const [notes, setNotes] = useState("");
   const [durationMinutesText, setDurationMinutesText] = useState("");
   const [durationHint, setDurationHint] = useState<string | null>(null);
+  const [serverConfig, setServerConfig] = useState(() => ({
+    serverUrl: localStorage.getItem('perfsight_server_url') ?? "",
+  }));
+  const [serverUrlDraft, setServerUrlDraft] = useState(serverConfig.serverUrl);
+  const [showServerConfig, setShowServerConfig] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<{
+    state: "idle" | "uploading" | "success" | "error";
+    message: string;
+    reportId?: number;
+  }>({ state: "idle", message: "" });
 
   // Persistent Log Metric Configs
   const [logConfigs, setLogConfigs] = useState<LogMetricConfig[]>(() => {
@@ -127,6 +138,18 @@ export const Dashboard: React.FC = () => {
   useEffect(() => {
     localStorage.setItem('perfsight_log_configs', JSON.stringify(logConfigs));
   }, [logConfigs]);
+
+  useEffect(() => {
+    let active = true;
+    getServerSyncConfig()
+      .then((config) => {
+        if (!active) return;
+        setServerConfig(config);
+        setServerUrlDraft(config.serverUrl);
+      })
+      .catch((error) => console.error("Could not load Server settings", error));
+    return () => { active = false; };
+  }, []);
 
   const maxDataPoints = 3600;
   const mockTimerRef = useRef<any>(null);
@@ -212,7 +235,14 @@ export const Dashboard: React.FC = () => {
               if (remainingMs <= 0) {
                 // Already overdue -> stop immediately.
                 try {
-                  await invoke("stop_collection");
+                  const stopResult = await stopCollectionAndSyncReport();
+                  if (stopResult.uploaded && stopResult.reportId) {
+                    setSyncStatus({ state: "success", message: `Uploaded report #${stopResult.reportId}`, reportId: stopResult.reportId });
+                  } else if (stopResult.uploadError && stopResult.reportId) {
+                    setSyncStatus({ state: "error", message: stopResult.uploadError, reportId: stopResult.reportId });
+                  } else if (stopResult.uploadError) {
+                    setSyncStatus({ state: "error", message: stopResult.uploadError });
+                  }
                   setIsCollecting(false);
                   setDurationHint(null);
                 } catch (e) {
@@ -367,6 +397,7 @@ export const Dashboard: React.FC = () => {
           log_metric_configs: mode === "browser" ? logConfigs : undefined,
         },
       });
+      setSyncStatus({ state: "idle", message: "" });
       setIsMocking(false);
       setIsCollecting(true);
       setChartData([]);
@@ -392,10 +423,62 @@ export const Dashboard: React.FC = () => {
     }
   };
 
+  const handleSaveServerConfig = async () => {
+    try {
+      const saved = await saveServerSyncConfig(serverUrlDraft);
+      setServerConfig(saved);
+      setServerUrlDraft(saved.serverUrl);
+      setShowServerConfig(false);
+      setSyncStatus({ state: "idle", message: "" });
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Could not save Server settings.");
+    }
+  };
+
+  const retryServerUpload = async () => {
+    const reportId = syncStatus.reportId;
+    if (!reportId) return;
+    setSyncStatus({ state: "uploading", message: "Retrying Server upload…", reportId });
+    try {
+      const response = await uploadLocalReport(reportId);
+      setSyncStatus({
+        state: "success",
+        message: `Uploaded report #${reportId}${response.run?.id ? ` · Server ${response.run.id}` : ""}`,
+        reportId,
+      });
+    } catch (error) {
+      setSyncStatus({
+        state: "error",
+        message: error instanceof Error ? error.message : "Server upload failed.",
+        reportId,
+      });
+    }
+  };
+
   const handleStop = async () => {
     try {
       if (!isMocking) {
-        await invoke("stop_collection");
+        setSyncStatus({ state: "uploading", message: "Saving report and syncing with Server…" });
+        const result = await stopCollectionAndSyncReport();
+        if (result.uploaded && result.reportId) {
+          setSyncStatus({
+            state: "success",
+            message: `Uploaded report #${result.reportId}${result.serverRunId ? ` · Server ${result.serverRunId}` : ""}`,
+            reportId: result.reportId,
+          });
+        } else if (result.uploadError && result.reportId) {
+          setSyncStatus({ state: "error", message: result.uploadError, reportId: result.reportId });
+        } else if (result.uploadError) {
+          setSyncStatus({ state: "error", message: result.uploadError });
+        } else if (result.saved && result.reportId) {
+          setSyncStatus({
+            state: "idle",
+            message: serverConfig.serverUrl ? "Report saved locally · Server upload did not start" : "Report saved locally · Configure Server to upload",
+            reportId: result.reportId,
+          });
+        } else {
+          setSyncStatus({ state: "idle", message: "" });
+        }
       }
       setIsCollecting(false);
       setIsMocking(false);
@@ -522,6 +605,39 @@ export const Dashboard: React.FC = () => {
           )}
         </div>
         <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => {
+              setServerUrlDraft(serverConfig.serverUrl);
+              setShowServerConfig(true);
+            }}
+            className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-slate-200 text-sm text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+            title={serverConfig.serverUrl || "Configure central PerfSight Server"}
+          >
+            <Settings className="w-4 h-4" />
+            Server
+          </button>
+          {syncStatus.message && (
+            <div
+              className={`max-w-64 truncate text-xs ${
+                syncStatus.state === "error" ? "text-rose-600 dark:text-rose-400" :
+                syncStatus.state === "success" ? "text-emerald-600 dark:text-emerald-400" :
+                "text-slate-500"
+              }`}
+              title={syncStatus.message}
+            >
+              {syncStatus.state === "uploading" ? "Uploading… " : ""}{syncStatus.message}
+            </div>
+          )}
+          {syncStatus.state === "error" && syncStatus.reportId && (
+            <button
+              type="button"
+              onClick={() => void retryServerUpload()}
+              className="text-xs text-indigo-600 hover:text-indigo-500 dark:text-indigo-400"
+            >
+              Retry
+            </button>
+          )}
           <div
             className={`px-3 py-1 rounded-full text-sm font-medium ${
               isCollecting
@@ -705,8 +821,11 @@ export const Dashboard: React.FC = () => {
                   onChange={(e) => setTagsText(e.target.value)}
                   disabled={isCollecting}
                   className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 disabled:opacity-60 dark:bg-slate-950 dark:border-slate-800 dark:text-slate-200 dark:placeholder:text-slate-600"
-                  placeholder="e.g. smoke, perf, macos"
+                  placeholder="e.g. smoke, release:1.2.3, campaign:lab-2026-11-12"
                 />
+                <div className="mt-1 text-[11px] text-slate-500">
+                  Use the same <span className="font-mono">campaign:id</span> tag on every test machine to group one test batch on Server.
+                </div>
                 {(selectedTags.length > 0 ||
                   knownTagSuggestions.length > 0) && (
                   <div className="mt-2 space-y-2">
@@ -859,6 +978,44 @@ export const Dashboard: React.FC = () => {
           />
         </div>
       </main>
+
+      {showServerConfig && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl dark:bg-slate-900">
+            <h2 className="text-lg font-semibold">Central PerfSight Server</h2>
+            <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+              Reports upload automatically after a test is stopped. Use an HTTPS URL for remote servers.
+            </p>
+            <label className="mt-5 block text-sm font-medium">
+              Server URL
+              <input
+                type="url"
+                value={serverUrlDraft}
+                onChange={(event) => setServerUrlDraft(event.target.value)}
+                placeholder="https://perfsight.example.com"
+                className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950"
+                autoComplete="url"
+              />
+            </label>
+            <div className="mt-6 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowServerConfig(false)}
+                className="rounded-lg px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveServerConfig}
+                className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500"
+              >
+                Save Server URL
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
