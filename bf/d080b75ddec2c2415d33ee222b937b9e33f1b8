@@ -1,0 +1,79 @@
+perf-sight/src/pages/Settings.tsx
+  s_f7324e840bd8e9::t_d80fdf2f8f2a1e 1-110
+perf-sight/src/pages/ComparisonDetail.tsx
+  s_f7324e840bd8e9::t_cf138e337dbe46 13,248,368,402,426,436,512,560,564
+  s_f7324e840bd8e9::t_52456cf6f479c8 742-745,1485,1488,1572,1575
+  s_f7324e840bd8e9::t_6cee497cf75e69 399,509
+perf-sight/src/pages/Dashboard.tsx
+  s_f7324e840bd8e9::t_62c003ca4f2686 609-610,614-618
+  s_f7324e840bd8e9::t_11b69d956290af 244,433,451,469
+  s_f7324e840bd8e9::t_3f6d316a3f4c29 10,570-571,573,584,595,599-604,606-608,611-613,620,625,668-697
+  s_f7324e840bd8e9::t_6ec4ff8619e777 4-5,11,88,241,247-249,409,429,443,445,448,466,472,479,491,494
+perfsight-server/src/index.ts
+  s_f7324e840bd8e9::t_73e8c2611d3202 44
+perf-sight/src/pages/FloatingWidget.tsx
+  s_f7324e840bd8e9::t_064779c9608902 108-126
+  s_f7324e840bd8e9::t_1e2e2420a201f9 4,106,139
+perf-sight/src-tauri/tauri.conf.json
+  s_f7324e840bd8e9::t_8f27d418274d90 5,18
+perf-sight/vite.config.ts
+  s_f7324e840bd8e9::t_aed4f92f78fcb0 13
+perfsight-server/README.md
+  s_f7324e840bd8e9::t_85d81c95444cf1 59,62-63,69-77
+  s_f7324e840bd8e9::t_a5f5f17bc9c777 78
+perf-sight/src/pages/ReportCompare.tsx
+  s_f7324e840bd8e9::t_bfb6ff01704047 9,90,920,924,928,975,978
+perfsight-server/public/index.html
+  s_f7324e840bd8e9::t_b6a93da0227587 60-67,322-323,327-330,335,350-376,382,390-422
+  s_f7324e840bd8e9::t_d8e51ee05c166a 588-608
+  s_f7324e840bd8e9::t_3033624b3850d7 112,115-183,204-223,257,259-261,264-265,271-309,1681
+  s_f7324e840bd8e9::t_f7d7569c8eeef6 649-657,686-722,776-789,794-796
+  s_f7324e840bd8e9::t_266b61df2220e2 423
+perf-sight/src/components/Notifications.tsx
+  s_f7324e840bd8e9::t_a599530c68b557 1,3-6,12-18,20-26,28-54,56-63,65-81,103-191,197-218,224-232
+  s_f7324e840bd8e9::t_c9f0e81a8f294f 7-11,19,27,55,64,192-196,219-223
+  s_f7324e840bd8e9::t_e8a0b7771be6bf 2,82-102
+perf-sight/src/utils/serverSync.ts
+  s_f7324e840bd8e9::t_95de1cdd92ba49 31,36,38
+perf-sight/src/pages/Reports.tsx
+  s_f7324e840bd8e9::t_b2b6e2f06f111e 4,66,343,346,639,823,1252,1304,1398
+  s_f7324e840bd8e9::t_10b60b68056187 361,376,636,799,805,816,1249,1301,1395
+perf-sight/scripts/ensure_sidecar.mjs
+  s_f7324e840bd8e9::t_9d37a6f930943a 1-40
+perf-sight/package.json
+  s_f7324e840bd8e9::t_cd2ffa06c3f1b9 7-8
+perfsight-server/src/routes/api.ts
+  s_f7324e840bd8e9::t_73e8c2611d3202 2,167-171,430-441,470,564-595
+  s_f7324e840bd8e9::t_ed04b7dc7d4dbc 596-598
+perf-sight/src/App.tsx
+  s_f7324e840bd8e9::t_374ca84fed9130 3,79-80
+  s_f7324e840bd8e9::t_bb952a79aca39f 64-68
+  s_f7324e840bd8e9::t_1e40d1541f786e 1,5,14,18,27-28,35-36,44-50,53-60,73,76-78,82-84,88,97-133,136-140,144,148-150,153,237,248
+perf-sight/src/pages/ReportDetail.tsx
+  s_f7324e840bd8e9::t_ac667a888eb731 20
+  s_f7324e840bd8e9::t_6100f57fe89d59 877
+  s_f7324e840bd8e9::t_589bc35b6455e2 4-5,201,863-864,867,1000-1004,1006-1007
+  s_f7324e840bd8e9::t_998cd23f443feb 271,279,282,593,850
+perf-sight/src/pages/Comparisons.tsx
+  s_f7324e840bd8e9::t_bbe7769aaa8bcb 633,685,781
+  s_f7324e840bd8e9::t_370b72e9c6ca7d 336,442
+  s_f7324e840bd8e9::t_0b9bc1142bc291 4,54,344,353-356,448,452,636,688,784
+perf-sight/src-tauri/src/lib.rs
+  s_f7324e840bd8e9::t_95de1cdd92ba49 9
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "bfd080b75ddec2c2415d33ee222b937b9e33f1b8",
+  "prompts": {},
+  "sessions": {
+    "s_f7324e840bd8e9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1ce55-711b-77f2-b0c3-01c33cc25509",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "Clever Su <clever.su@zoom.us>"
+    }
+  }
+}
