@@ -56,13 +56,25 @@ Content-Type: application/json
 
 ### List Runs
 ```bash
-GET /api/v1/runs?release=6.7.0&scenario=startup&platform=macos&limit=50
+GET /api/v1/runs?release=6.7.0&scenario=startup&platform=macos&sort=newest&limit=50
 ```
+
+`sort` accepts `newest` (default), `oldest`, `device-asc`, or `device-desc`. The Server site also lets you group the list by date or device.
 
 ### Get Run Detail
 ```bash
 GET /api/v1/runs/:id
 ```
+
+### Edit Run Title
+```bash
+PATCH /api/v1/runs/:id
+Content-Type: application/json
+
+{ "title": "Updated report title" }
+```
+
+Titles must contain 1 to 500 characters. The update is reflected in the run list and report details.
 
 ### Compare Runs
 ```bash

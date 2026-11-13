@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useNavigate } from "react-router-dom";
+import { useNotifications } from "../components/Notifications";
 import {
   GitCompare,
   FolderPlus,
@@ -50,6 +51,7 @@ const normFolder = (raw: any) => {
 };
 
 export const Comparisons: React.FC = () => {
+  const { pushNotification } = useNotifications();
   const navigate = useNavigate();
 
   const [items, setItems] = useState<ComparisonSummary[]>([]);
@@ -331,6 +333,7 @@ export const Comparisons: React.FC = () => {
     if (selectedIds.size === 0) return;
     if (!confirm(`Delete ${selectedIds.size} comparison(s)? This cannot be undone.`)) return;
     await invoke("delete_comparisons", { ids: Array.from(selectedIds) });
+    pushNotification("Comparisons deleted", `${selectedIds.size} ${selectedIds.size === 1 ? "comparison was" : "comparisons were"} deleted.`, "success");
     setSelectedIds(new Set());
     await loadComparisons();
   };
@@ -338,7 +341,7 @@ export const Comparisons: React.FC = () => {
   const handleExportSelected = async () => {
     const ids = Array.from(selectedIds);
     if (ids.length !== 1) {
-      alert("Please select exactly 1 comparison to export.");
+      pushNotification("Select one comparison", "Choose exactly one comparison before exporting.", "info");
       return;
     }
     try {
@@ -347,7 +350,10 @@ export const Comparisons: React.FC = () => {
         comparisonId: ids[0],
         filename: null,
       } as any)) as string;
-      alert(`Exported:\n${outPath}`);
+      pushNotification("Comparison export complete", outPath, "success");
+    } catch (error) {
+      console.error("Comparison export failed", error);
+      pushNotification("Comparison export failed", error instanceof Error ? error.message : "Please try again.", "error");
     } finally {
       setIsExporting(false);
     }
@@ -433,16 +439,17 @@ export const Comparisons: React.FC = () => {
                         })) as any;
                         await loadComparisons();
                         await loadFolders();
+                        pushNotification("Comparison imported", "The comparison bundle was added.", "success");
                         if (result?.comparison_id) {
                           navigate(`/comparison/${result.comparison_id}`, {
                             state: { fromComparisons: true },
                           });
                         } else {
-                          alert("Imported, but no comparison_id returned.");
+                          pushNotification("Import completed", "The bundle was imported, but no comparison view was returned.", "info");
                         }
                       } catch (err) {
                         console.error("Import failed", err);
-                        alert("Failed to import comparison.");
+                        pushNotification("Comparison import failed", err instanceof Error ? err.message : "Please try again.", "error");
                       } finally {
                         setIsImporting(false);
                       }
@@ -623,9 +630,10 @@ export const Comparisons: React.FC = () => {
                         setSelectedFolder(normFolder(newPath));
                         await loadFolders();
                         setFolderModal(null);
+                        pushNotification("Folder created", newPath, "success");
                       } catch (e) {
                         console.error("create_comparison_folder failed", e);
-                        alert("Failed to create folder");
+                        pushNotification("Could not create folder", e instanceof Error ? e.message : "Please try again.", "error");
                       } finally {
                         setIsFolderOp(false);
                       }
@@ -674,9 +682,10 @@ export const Comparisons: React.FC = () => {
                         await loadComparisons();
                         await loadFolders();
                         setFolderModal(null);
+                        pushNotification("Folder renamed", newPath, "success");
                       } catch (e) {
                         console.error("rename_comparison_folder failed", e);
-                        alert("Failed to rename folder");
+                        pushNotification("Could not rename folder", e instanceof Error ? e.message : "Please try again.", "error");
                       } finally {
                         setIsFolderOp(false);
                       }
@@ -769,9 +778,10 @@ export const Comparisons: React.FC = () => {
                         await loadComparisons();
                         await loadFolders();
                         setFolderModal(null);
+                        pushNotification("Folder deleted", folderModal.currentPath, "success");
                       } catch (e) {
                         console.error("delete_comparison_folder failed", e);
-                        alert("Failed to delete folder");
+                        pushNotification("Could not delete folder", e instanceof Error ? e.message : "Please try again.", "error");
                       } finally {
                         setIsFolderOp(false);
                       }

@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useLocation, useNavigate } from "react-router-dom";
+import { useNotifications } from "../components/Notifications";
 import { buildReportPdfDataUri } from "../utils/bulkExport";
 import {
   FileText,
@@ -62,6 +63,7 @@ const normFolder = (raw: any) => {
 };
 
 export const Reports: React.FC = () => {
+  const { pushNotification } = useNotifications();
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -338,10 +340,10 @@ export const Reports: React.FC = () => {
         items,
         filename: null,
       })) as string;
-      alert(`Exported ZIP:\n${outPath}`);
+      pushNotification("Report export complete", outPath, "success");
     } catch (e) {
       console.error("Export ZIP failed", e);
-      alert("Failed to export ZIP");
+      pushNotification("Report export failed", "Could not create the report ZIP.", "error");
     } finally {
       setIsExportingBundle(false);
     }
@@ -356,6 +358,7 @@ export const Reports: React.FC = () => {
       setSelectedIds(new Set());
       setConfirmBulk(false);
       await loadReports();
+      pushNotification("Reports deleted", `${ids.length} ${ids.length === 1 ? "report was" : "reports were"} deleted.`, "success");
     } finally {
       setIsDeleting(false);
     }
@@ -370,6 +373,7 @@ export const Reports: React.FC = () => {
       setSelectedIds(next);
       setConfirmDeleteId(null);
       await loadReports();
+      pushNotification("Report deleted", `Report #${id} was deleted.`, "success");
     } finally {
       setIsDeleting(false);
     }
@@ -629,9 +633,10 @@ export const Reports: React.FC = () => {
       }
       await loadReports();
       await loadFolders();
+      pushNotification("Reports moved", `${ids.length} ${ids.length === 1 ? "report" : "reports"} moved to ${path || "Root"}.`, "success");
     } catch (e) {
       console.error("Move failed", e);
-      alert("Failed to move");
+      pushNotification("Could not move reports", "Please try again.", "error");
     }
   };
 
@@ -791,11 +796,13 @@ export const Reports: React.FC = () => {
                           
                           // Navigate to Comparison artifact
                           if (result.comparison_id) {
+                            pushNotification("Comparison imported", `${result.imported_ids?.length || data.reports.length} reports were added.`, "success");
                             navigate(`/comparison/${result.comparison_id}`, {
                               state: { fromReports: true },
                             });
                           } else if (result.imported_ids && result.imported_ids.length >= 2) {
                             // fallback (legacy)
+                            pushNotification("Reports imported", `${result.imported_ids.length} reports were added.`, "success");
                             const ids = result.imported_ids.join(",");
                             navigate(`/compare?ids=${ids}`);
                           }
@@ -806,13 +813,14 @@ export const Reports: React.FC = () => {
                           })) as number;
                           await loadReports();
                           await loadFolders();
+                          pushNotification("Report imported", `Report #${newId} was added.`, "success");
                           navigate(`/report/${newId}`, { state: { fromReports: true } });
                         } else {
                           throw new Error("Invalid format: expected dataset or comparison bundle");
                         }
                       } catch (err) {
                         console.error("Import failed", err);
-                        alert("Failed to import: " + (err as any)?.message || err);
+                        pushNotification("Report import failed", err instanceof Error ? err.message : String(err), "error");
                       } finally {
                         setIsImporting(false);
                       }
@@ -1238,9 +1246,10 @@ export const Reports: React.FC = () => {
                         setSelectedFolder(normFolder(newPath));
                         await loadFolders();
                         setFolderModal(null);
+                        pushNotification("Folder created", newPath, "success");
                       } catch (e) {
                         console.error("create_folder failed", e);
-                        alert("Failed to create folder");
+                        pushNotification("Could not create folder", e instanceof Error ? e.message : "Please try again.", "error");
                       } finally {
                         setIsFolderOp(false);
                       }
@@ -1289,9 +1298,10 @@ export const Reports: React.FC = () => {
                         await loadReports();
                         await loadFolders();
                         setFolderModal(null);
+                        pushNotification("Folder renamed", newPath, "success");
                       } catch (e) {
                         console.error("rename_folder failed", e);
-                        alert("Failed to rename folder");
+                        pushNotification("Could not rename folder", e instanceof Error ? e.message : "Please try again.", "error");
                       } finally {
                         setIsFolderOp(false);
                       }
@@ -1382,9 +1392,10 @@ export const Reports: React.FC = () => {
                         await loadReports();
                         await loadFolders();
                         setFolderModal(null);
+                        pushNotification("Folder deleted", folderModal.currentPath, "success");
                       } catch (e) {
                         console.error("delete_folder failed", e);
-                        alert("Failed to delete folder");
+                        pushNotification("Could not delete folder", e instanceof Error ? e.message : "Please try again.", "error");
                       } finally {
                         setIsFolderOp(false);
                       }

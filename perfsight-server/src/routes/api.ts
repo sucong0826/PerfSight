@@ -1,4 +1,5 @@
 import { Router } from "express";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "../db.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
@@ -163,6 +164,11 @@ const compareRequestSchema = z.object({
   ids: z.array(z.string().uuid()).min(2).max(100),
 }).strict();
 const runIdSchema = z.string().uuid();
+const updateRunTitleSchema = z.object({
+  title: z.string().trim().min(1).max(500)
+    .refine((value) => !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value)),
+}).strict();
+const runSortOptions = new Set(["newest", "oldest", "device-asc", "device-desc"]);
 
 // ====================
 // Helper Functions
@@ -421,6 +427,18 @@ apiRouter.get("/runs", async (req, res) => {
       offset = "0",
     } = req.query;
 
+    const sort = req.query.sort ?? "newest";
+    if (typeof sort !== "string" || !runSortOptions.has(sort)) {
+      return res.status(400).json({ error: "Invalid sort option." });
+    }
+    const orderBy: Prisma.RunOrderByWithRelationInput[] = sort === "oldest"
+      ? [{ reportDate: "asc" }, { createdAt: "asc" }]
+      : sort === "device-asc"
+        ? [{ deviceName: "asc" }, { reportDate: "desc" }]
+        : sort === "device-desc"
+          ? [{ deviceName: "desc" }, { reportDate: "desc" }]
+          : [{ reportDate: "desc" }, { createdAt: "desc" }];
+
     const where: any = {};
     const filterText = (value: unknown): string | null => {
       if (typeof value !== "string") return null;
@@ -449,7 +467,7 @@ apiRouter.get("/runs", async (req, res) => {
 
     const runs = await prisma.run.findMany({
       where,
-      orderBy: { createdAt: "desc" },
+      orderBy,
       take: safeLimit,
       skip: safeOffset,
       select: {
@@ -540,6 +558,41 @@ apiRouter.get("/runs/:id", async (req, res) => {
   } catch {
     console.error("Get run failed.");
     res.status(500).json({ error: "Get run failed." });
+  }
+});
+
+/**
+ * PATCH /api/v1/runs/:id
+ * Update a run's display title.
+ */
+apiRouter.patch("/runs/:id", async (req, res) => {
+  try {
+    const parsedId = runIdSchema.safeParse(req.params.id);
+    if (!parsedId.success) return res.status(400).json({ error: "Invalid run ID." });
+
+    const validation = updateRunTitleSchema.safeParse(req.body);
+    if (!validation.success) {
+      return res.status(400).json({ error: "Title must be 1 to 500 characters without control characters." });
+    }
+
+    const existingRun = await prisma.run.findUnique({ where: { id: parsedId.data } });
+    if (!existingRun) return res.status(404).json({ error: "Run not found." });
+
+    const dataset = JSON.parse(existingRun.datasetJson) as ReportDatasetV1;
+    dataset.report.title = validation.data.title;
+    const updatedRun = await prisma.run.update({
+      where: { id: parsedId.data },
+      data: {
+        title: validation.data.title,
+        datasetJson: JSON.stringify(dataset),
+      },
+      select: { id: true, title: true, updatedAt: true },
+    });
+
+    res.json({ success: true, run: updatedRun });
+  } catch {
+    console.error("Update run title failed.");
+    res.status(500).json({ error: "Update run title failed." });
   }
 });
 

@@ -57,6 +57,14 @@
         const res = await this.request(`/api/v1/runs/${encodeURIComponent(id)}`, { method: 'DELETE' });
         return res.json();
       },
+      async updateRunTitle(id, title) {
+        const res = await this.request(`/api/v1/runs/${encodeURIComponent(id)}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title }),
+        });
+        return res.json();
+      },
     };
 
     // ========================
@@ -101,9 +109,78 @@
     // ========================
     // Chart Component using Chart.js
     // ========================
-    function LineChartComponent({ data, dataKeys, title, yLabel, formatValue }) {
+    function LineChartComponent({ data, dataKeys, title, yLabel, formatValue, enableExplore = false }) {
       const canvasRef = useRef(null);
       const chartRef = useRef(null);
+      const dragSelectionRef = useRef(null);
+      const [expanded, setExpanded] = useState(false);
+      const [zoomRange, setZoomRange] = useState(null);
+
+      const getChartPoint = (event, chart) => {
+        const rect = canvasRef.current?.getBoundingClientRect();
+        if (!rect || !rect.width || !rect.height) return null;
+        return {
+          x: (event.clientX - rect.left) * (chart.width / rect.width),
+          y: (event.clientY - rect.top) * (chart.height / rect.height),
+        };
+      };
+
+      const handlePointerDown = (event) => {
+        const chart = chartRef.current;
+        if (!enableExplore || !chart || !event.isPrimary || event.button !== 0) return;
+        const point = getChartPoint(event, chart);
+        const area = chart.chartArea;
+        if (!point || point.x < area.left || point.x > area.right || point.y < area.top || point.y > area.bottom) return;
+
+        event.preventDefault();
+        event.currentTarget.setPointerCapture(event.pointerId);
+        dragSelectionRef.current = { pointerId: event.pointerId, startX: point.x, currentX: point.x };
+        chart.update('none');
+      };
+
+      const handlePointerMove = (event) => {
+        const chart = chartRef.current;
+        const selection = dragSelectionRef.current;
+        if (!enableExplore || !chart || !selection || selection.pointerId !== event.pointerId) return;
+        const point = getChartPoint(event, chart);
+        if (!point) return;
+        selection.currentX = Math.min(chart.chartArea.right, Math.max(chart.chartArea.left, point.x));
+        chart.update('none');
+      };
+
+      const finishPointerSelection = (event, applyZoom) => {
+        const chart = chartRef.current;
+        const selection = dragSelectionRef.current;
+        if (!selection || selection.pointerId !== event.pointerId) return;
+
+        dragSelectionRef.current = null;
+        if (applyZoom && chart && Math.abs(selection.currentX - selection.startX) >= 8 && data.length > 1) {
+          const xScale = chart.scales.x;
+          const startIndex = xScale.getValueForPixel(Math.min(selection.startX, selection.currentX));
+          const endIndex = xScale.getValueForPixel(Math.max(selection.startX, selection.currentX));
+          const min = Math.max(0, Math.min(data.length - 1, Math.floor(startIndex)));
+          const max = Math.max(0, Math.min(data.length - 1, Math.ceil(endIndex)));
+          if (max > min) {
+            chart.options.scales.x.min = min;
+            chart.options.scales.x.max = max;
+            chart.update();
+            const startTime = Number(data[min].elapsed ?? data[min].time_s ?? min);
+            const endTime = Number(data[max].elapsed ?? data[max].time_s ?? max);
+            setZoomRange(`${startTime.toFixed(1)}s – ${endTime.toFixed(1)}s`);
+          }
+        }
+        if (chart) chart.update('none');
+      };
+
+      const resetZoom = () => {
+        const chart = chartRef.current;
+        if (!chart) return;
+        delete chart.options.scales.x.min;
+        delete chart.options.scales.x.max;
+        chart.update();
+        dragSelectionRef.current = null;
+        setZoomRange(null);
+      };
 
       useEffect(() => {
         if (!canvasRef.current || !data.length) return;
@@ -124,7 +201,26 @@
           fill: false,
         }));
 
-        chartRef.current = new Chart(ctx, {
+        const selectionOverlay = {
+          id: 'perfsight-range-selection',
+          beforeDatasetsDraw: (chart) => {
+            const selection = dragSelectionRef.current;
+            if (!selection || chart !== chartRef.current) return;
+            const left = Math.max(chart.chartArea.left, Math.min(selection.startX, selection.currentX));
+            const right = Math.min(chart.chartArea.right, Math.max(selection.startX, selection.currentX));
+            if (right <= left) return;
+            const { ctx, chartArea } = chart;
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(chartArea.left, chartArea.top, chartArea.right - chartArea.left, chartArea.bottom - chartArea.top);
+            ctx.clip();
+            ctx.fillStyle = 'rgba(99, 102, 241, 0.18)';
+            ctx.fillRect(left, chartArea.top, right - left, chartArea.bottom - chartArea.top);
+            ctx.restore();
+          },
+        };
+
+        const chart = new Chart(ctx, {
           type: 'line',
           data: {
             labels: data.map(d => `${Math.round(d.elapsed || d.time_s || 0)}s`),
@@ -158,20 +254,59 @@
               },
             },
           },
+          plugins: enableExplore ? [selectionOverlay] : [],
         });
+        chartRef.current = chart;
+        dragSelectionRef.current = null;
+        setZoomRange(null);
 
         return () => {
-          if (chartRef.current) {
-            chartRef.current.destroy();
-          }
+          chart.destroy();
+          if (chartRef.current === chart) chartRef.current = null;
         };
       }, [data, dataKeys]);
 
       return (
         <div className="bg-white border border-slate-200 rounded-xl p-5 mb-6">
-          <h3 className="font-medium text-slate-800 mb-4">{title}</h3>
-          <div className="h-[300px]">
-            <canvas ref={canvasRef}></canvas>
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+            <h3 className="font-medium text-slate-800">{title}</h3>
+            {enableExplore && (
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                {zoomRange && <span className="text-xs text-slate-500">Range: {zoomRange}</span>}
+                {zoomRange && (
+                  <button
+                    type="button"
+                    onClick={resetZoom}
+                    className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                  >
+                    Reset zoom
+                  </button>
+                )}
+                <button
+                  type="button"
+                  aria-expanded={expanded}
+                  onClick={() => setExpanded(value => !value)}
+                  className="rounded-lg border border-indigo-200 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-50"
+                >
+                  {expanded ? 'Collapse chart' : 'Expand chart'}
+                </button>
+              </div>
+            )}
+          </div>
+          {enableExplore && (
+            <p className="mb-3 text-xs text-slate-400">
+              Drag across the plot to zoom into a time range. Hover over the lines to inspect values.
+            </p>
+          )}
+          <div className={`relative ${expanded ? 'h-[640px]' : 'h-[300px]'}`}>
+            <canvas
+              ref={canvasRef}
+              onPointerDown={enableExplore ? handlePointerDown : undefined}
+              onPointerMove={enableExplore ? handlePointerMove : undefined}
+              onPointerUp={enableExplore ? event => finishPointerSelection(event, true) : undefined}
+              onPointerCancel={enableExplore ? event => finishPointerSelection(event, false) : undefined}
+              className={enableExplore ? 'touch-none cursor-crosshair' : ''}
+            />
           </div>
         </div>
       );
@@ -184,14 +319,20 @@
       const [runs, setRuns] = useState([]);
       const [filters, setFilters] = useState({});
       const [filterOptions, setFilterOptions] = useState({});
+      const [sortOption, setSortOption] = useState('newest');
+      const [groupBy, setGroupBy] = useState('none');
       const [loading, setLoading] = useState(true);
       const [importing, setImporting] = useState(false);
       const [selectedIds, setSelectedIds] = useState(new Set());
+      const [editingRunId, setEditingRunId] = useState(null);
+      const [titleDraft, setTitleDraft] = useState('');
+      const [titleError, setTitleError] = useState('');
+      const [savingTitleId, setSavingTitleId] = useState(null);
       const fileInputRef = useRef(null);
 
       const loadRuns = () => {
         setLoading(true);
-        api.getRuns(filters)
+        api.getRuns({ ...filters, sort: sortOption })
           .then(data => setRuns(data.runs || []))
           .catch(error => {
             console.error('Loading runs failed:', error);
@@ -206,18 +347,78 @@
 
       useEffect(() => {
         loadRuns();
-      }, [filters]);
+      }, [filters, sortOption]);
+
+      const groupedRuns = useMemo(() => {
+        if (groupBy === 'none') return [{ key: 'all', label: '', runs }];
+
+        const groups = new Map();
+        runs.forEach(run => {
+          let key;
+          let label;
+          if (groupBy === 'device') {
+            key = run.deviceName || 'Unknown device';
+            label = key;
+          } else {
+            const timestamp = Date.parse(run.reportDate);
+            key = Number.isFinite(timestamp) ? new Date(timestamp).toISOString().slice(0, 10) : 'Unknown date';
+            label = key === 'Unknown date' ? key : new Date(`${key}T00:00:00`).toLocaleDateString();
+          }
+          if (!groups.has(key)) groups.set(key, { key, label, runs: [] });
+          groups.get(key).runs.push(run);
+        });
+
+        return Array.from(groups.values()).sort((left, right) => (
+          groupBy === 'device'
+            ? left.key.localeCompare(right.key, undefined, { numeric: true, sensitivity: 'base' })
+            : right.key.localeCompare(left.key)
+        ));
+      }, [runs, groupBy]);
 
       const handleDelete = async (e, id) => {
         e.stopPropagation();
         if (!confirm('Delete this run?')) return;
         await api.deleteRun(id);
-        setRuns(runs.filter(r => r.id !== id));
+        setRuns(current => current.filter(r => r.id !== id));
         setSelectedIds(prev => {
           const next = new Set(prev);
           next.delete(id);
           return next;
         });
+      };
+
+      const handleStartEdit = (event, run) => {
+        event.stopPropagation();
+        setEditingRunId(run.id);
+        setTitleDraft(run.title || '');
+        setTitleError('');
+      };
+
+      const handleSaveTitle = async (event, run) => {
+        event.stopPropagation();
+        const title = titleDraft.trim();
+        if (!title || title.length > 500 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(title)) {
+          setTitleError('Title must be 1 to 500 characters without control characters.');
+          return;
+        }
+
+        setSavingTitleId(run.id);
+        setTitleError('');
+        try {
+          const result = await api.updateRunTitle(run.id, title);
+          setRuns(current => current.map(item => item.id === run.id ? { ...item, title: result.run.title } : item));
+          setEditingRunId(null);
+        } catch (error) {
+          setTitleError(error instanceof Error ? error.message : 'Could not update report title.');
+        } finally {
+          setSavingTitleId(null);
+        }
+      };
+
+      const handleCancelEdit = (event) => {
+        event.stopPropagation();
+        setEditingRunId(null);
+        setTitleError('');
       };
 
       const handleImport = async (e) => {
@@ -384,6 +585,27 @@
                 <option key={p} value={p}>{p}</option>
               )}
             </select>
+            <select
+              aria-label="Sort reports"
+              className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
+              value={sortOption}
+              onChange={e => setSortOption(e.target.value)}
+            >
+              <option value="newest">Newest first</option>
+              <option value="oldest">Oldest first</option>
+              <option value="device-asc">Device A–Z</option>
+              <option value="device-desc">Device Z–A</option>
+            </select>
+            <select
+              aria-label="Group reports"
+              className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
+              value={groupBy}
+              onChange={e => setGroupBy(e.target.value)}
+            >
+              <option value="none">No grouping</option>
+              <option value="date">Group by date</option>
+              <option value="device">Group by device</option>
+            </select>
             <input 
               type="text"
               placeholder="Search by build ID..."
@@ -424,7 +646,15 @@
             </div>
           ) : (
             <div className="space-y-3">
-              {runs.map(run => {
+              {groupedRuns.map(group => (
+                <section key={group.key} className="space-y-3">
+                  {group.label && (
+                    <div className="flex items-center justify-between px-1 pt-2">
+                      <h2 className="text-sm font-semibold text-slate-600">{group.label}</h2>
+                      <span className="text-xs text-slate-400">{group.runs.length} {group.runs.length === 1 ? 'report' : 'reports'}</span>
+                    </div>
+                  )}
+                  {group.runs.map(run => {
                 const isSelected = selectedIds.has(run.id);
                 return (
                   <div 
@@ -453,7 +683,43 @@
                           )}
                         </button>
                         <div className="min-w-0 flex-1">
-                          <div className="font-medium text-slate-800 truncate">{run.title}</div>
+                          {editingRunId === run.id ? (
+                            <div className="space-y-1" onClick={event => event.stopPropagation()}>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <input
+                                  autoFocus
+                                  type="text"
+                                  maxLength={500}
+                                  value={titleDraft}
+                                  onChange={event => setTitleDraft(event.target.value)}
+                                  onKeyDown={event => {
+                                    if (event.key === 'Enter') handleSaveTitle(event, run);
+                                    if (event.key === 'Escape') handleCancelEdit(event);
+                                  }}
+                                  aria-label="Report title"
+                                  className="min-w-[220px] flex-1 rounded-lg border border-indigo-300 bg-white px-3 py-1.5 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-indigo-200"
+                                />
+                                <button
+                                  type="button"
+                                  disabled={savingTitleId === run.id}
+                                  onClick={event => handleSaveTitle(event, run)}
+                                  className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-60"
+                                >
+                                  {savingTitleId === run.id ? 'Saving…' : 'Save'}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={handleCancelEdit}
+                                  className="rounded-lg px-2 py-1.5 text-xs text-slate-500 hover:bg-slate-100"
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                              {titleError && <div role="alert" className="text-xs text-rose-600">{titleError}</div>}
+                            </div>
+                          ) : (
+                            <div className="font-medium text-slate-800 truncate">{run.title}</div>
+                          )}
                           <div className="text-sm text-slate-500 mt-1">
                             {formatDate(run.reportDate)}
                             {run.durationSeconds && <span className="ml-3">⏱ {formatDuration(run.durationSeconds)}</span>}
@@ -507,17 +773,27 @@
                             <span className="text-slate-400 ml-1">(P95: {formatMem(run.p95MemMb)})</span>
                           )}
                         </div>
-                        <button 
-                          onClick={(e) => handleDelete(e, run.id)}
-                          className="mt-2 text-xs text-rose-500 hover:text-rose-700"
-                        >
-                          Delete
-                        </button>
+                        <div className="mt-2 flex items-center justify-end gap-3">
+                          <button
+                            onClick={event => handleStartEdit(event, run)}
+                            className="text-xs text-indigo-600 hover:text-indigo-800"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            onClick={event => handleDelete(event, run.id)}
+                            className="text-xs text-rose-500 hover:text-rose-700"
+                          >
+                            Delete
+                          </button>
+                        </div>
                       </div>
                     </div>
                   </div>
                 );
-              })}
+                  })}
+                </section>
+              ))}
             </div>
           )}
         </div>
@@ -1402,6 +1678,7 @@
               title={tab === 'cpu' ? 'CPU Usage Comparison' : 'Memory Usage Comparison'}
               yLabel={tab === 'cpu' ? 'CPU (%)' : 'Memory (MB)'}
               formatValue={(v) => v != null ? (tab === 'cpu' ? `${v.toFixed(1)}%` : `${v.toFixed(1)} MB`) : 'N/A'}
+              enableExplore
             />
           )}
 

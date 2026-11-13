@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, Brush } from "recharts";
 import { useTheme } from "../theme";
+import { useNotifications } from "../components/Notifications";
 
 interface ComparisonDetailData {
   id: number;
@@ -244,6 +245,7 @@ const extractProcItems = (r: ReportDetailData | undefined | null) => {
 };
 
 export const ComparisonDetail: React.FC = () => {
+  const { pushNotification } = useNotifications();
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const location = useLocation();
@@ -363,7 +365,7 @@ export const ComparisonDetail: React.FC = () => {
     if (!cmp) return;
     const ids = filteredReportSummaries.map((r) => r.id).sort((a, b) => a - b);
     if (ids.length < 2) {
-      alert("需要至少 2 个 reports 才能进行 comparison。请调整 tag 过滤条件。");
+      pushNotification("Not enough reports", "At least two reports must match the selected tags.", "info");
       return;
     }
     try {
@@ -394,9 +396,10 @@ export const ComparisonDetail: React.FC = () => {
       });
       setCpuSelById(nextCpu);
       setMemSelById(nextMem);
+      pushNotification("Report set updated", `${ids.length} reports are now included in this comparison.`, "success");
     } catch (e) {
       console.error("applyReportSet failed", e);
-      alert("应用 tag 过滤的 report set 失败");
+      pushNotification("Could not apply report filter", e instanceof Error ? e.message : "Please try again.", "error");
     } finally {
       setIsApplyingReportSet(false);
     }
@@ -420,7 +423,7 @@ export const ComparisonDetail: React.FC = () => {
     // not global DB reports. This matches the bundle workflow.
     const pool = allReports.filter((r) => (cmp?.report_ids ?? []).includes(r.id));
     if (pool.length < 2) {
-      alert("当前 comparison 的 report 数量不足（需要至少 2 个）。");
+      pushNotification("Not enough reports", "This comparison needs at least two reports.", "info");
       return;
     }
 
@@ -430,11 +433,7 @@ export const ComparisonDetail: React.FC = () => {
     }));
     const invalid = groupMatches.filter((g) => g.reports.length < 2);
     if (invalid.length) {
-      alert(
-        `以下 group 命中的 reports 少于 2 个：${invalid
-          .map((g) => `${g.name}(${g.reports.length})`)
-          .join(", ")}。请调整 tags 或匹配模式。`
-      );
+      pushNotification("Some groups need more reports", `${invalid.map((g) => `${g.name} (${g.reports.length})`).join(", ")} · Select tags that match at least two reports per group.`, "info");
       return;
     }
 
@@ -507,9 +506,10 @@ export const ComparisonDetail: React.FC = () => {
         items.some((x) => x.key === baselineGroupKey) ? baselineGroupKey : items[0].key;
       setBaselineGroupKey(baselineKey);
       setGroupResult({ baselineKey, groups: items });
+      pushNotification("Tag group comparison complete", `${items.length} groups are ready to compare.`, "success");
     } catch (e) {
       console.error("runGroupCompare failed", e);
-      alert("动态 Tag Group 对比失败（请看 console）");
+      pushNotification("Tag group comparison failed", e instanceof Error ? e.message : "Please try again.", "error");
     } finally {
       setIsRunningGroupCompare(false);
     }
@@ -557,10 +557,11 @@ export const ComparisonDetail: React.FC = () => {
         meta: { ...(cmp.meta ?? {}), tags: parsedTagsDraft, folder_path: nextFolder },
       });
       setIsEditingMeta(false);
+      pushNotification("Comparison settings saved", nextTitle, "success");
     } catch (e: any) {
       console.error("save meta failed", e);
       setMetaError(String(e?.message ?? e));
-      alert("Failed to save comparison meta");
+      pushNotification("Could not save comparison settings", e instanceof Error ? e.message : "Please try again.", "error");
     } finally {
       setIsSavingMeta(false);
     }
@@ -738,7 +739,10 @@ export const ComparisonDetail: React.FC = () => {
         comparisonId: cmp.id,
         filename: null,
       } as any)) as string;
-      alert(`Exported:\n${out}`);
+      pushNotification("Comparison export complete", out, "success");
+    } catch (error) {
+      console.error("Comparison export failed", error);
+      pushNotification("Comparison export failed", error instanceof Error ? error.message : "Please try again.", "error");
     } finally {
       setIsExporting(false);
     }
@@ -1478,10 +1482,10 @@ export const ComparisonDetail: React.FC = () => {
                           };
                           const csv = [header, rowFor(baseline), ...targets.map(rowFor)].join("\n");
                           await navigator.clipboard.writeText(csv);
-                          alert("Copied CSV to clipboard.");
+                          pushNotification("CSV copied", "The comparison table is ready to paste.", "success");
                         } catch (e) {
                           console.error("copy csv failed", e);
-                          alert("Failed to copy CSV (clipboard permission?).");
+                          pushNotification("Could not copy CSV", "Clipboard access was unavailable.", "error");
                         }
                       }}
                       className="text-xs px-2 py-1 rounded-md border border-slate-200 hover:bg-slate-50 text-slate-700 dark:border-slate-700 dark:hover:bg-slate-800 dark:text-slate-200"
@@ -1565,10 +1569,10 @@ export const ComparisonDetail: React.FC = () => {
 
                           const md = [head, dash, row(baseline), ...targets.map(row)].join("\n");
                           await navigator.clipboard.writeText(md);
-                          alert("Copied Markdown to clipboard.");
+                          pushNotification("Markdown copied", "The comparison table is ready to paste.", "success");
                         } catch (e) {
                           console.error("copy markdown failed", e);
-                          alert("Failed to copy Markdown (clipboard permission?).");
+                          pushNotification("Could not copy Markdown", "Clipboard access was unavailable.", "error");
                         }
                       }}
                       className="text-xs px-2 py-1 rounded-md border border-slate-200 hover:bg-slate-50 text-slate-700 dark:border-slate-700 dark:hover:bg-slate-800 dark:text-slate-200"

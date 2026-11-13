@@ -6,7 +6,7 @@ pub mod database;
 pub mod analysis;
 pub mod ws_server;
 
-use commands::{CollectionState, ServerSyncState};
+use commands::CollectionState;
 use database::Database;
 use tauri::Manager;
 
@@ -33,16 +33,12 @@ pub fn run() {
             
             app.manage(db);
             app.manage(CollectionState::new());
-            app.manage(ServerSyncState::new());
-            
             // Start WebSocket Server for Chrome Extension
             ws_server::start_server(app.handle().clone());
             
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            commands::get_server_sync_config,
-            commands::set_server_sync_config,
             commands::get_process_list,
             commands::get_collection_status,
             commands::start_collection,

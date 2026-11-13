@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, Link, useLocation, useNavigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { getServerSyncConfig, saveServerSyncConfig, uploadReportDataset } from "../utils/serverSync";
+import { getServerSyncConfig, uploadReportDataset } from "../utils/serverSync";
+import { useNotifications } from "../components/Notifications";
 import {
   ArrowLeft,
   Loader,
@@ -16,6 +17,7 @@ import {
   Save,
   Activity,
   Upload,
+  Settings,
 } from "lucide-react";
 import { PerformanceCharts, ProcessInfo } from "../components/Charts";
 import jsPDF from "jspdf";
@@ -196,6 +198,7 @@ const MetricLabel: React.FC<{ label: string; tip?: string }> = ({
 };
 
 export const ReportDetail: React.FC = () => {
+  const { pushNotification } = useNotifications();
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const location = useLocation();
@@ -215,7 +218,6 @@ export const ReportDetail: React.FC = () => {
   const [isExporting, setIsExporting] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [serverUrl, setServerUrl] = useState(() => localStorage.getItem("perfsight_server_url") ?? "");
-  const [showServerConfig, setShowServerConfig] = useState(false);
   const [isRenaming, setIsRenaming] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [isSavingTitle, setIsSavingTitle] = useState(false);
@@ -266,7 +268,7 @@ export const ReportDetail: React.FC = () => {
     if (!report) return;
     const nextTitle = titleDraft.trim();
     if (!nextTitle) {
-      alert("Title cannot be empty");
+      pushNotification("Title required", "Enter a title before saving the report.", "info");
       return;
     }
     try {
@@ -274,9 +276,10 @@ export const ReportDetail: React.FC = () => {
       await invoke("update_report_title", { id: report.id, title: nextTitle });
       setReport({ ...report, title: nextTitle });
       setIsRenaming(false);
+      pushNotification("Report title updated", nextTitle, "success");
     } catch (e) {
       console.error("update_report_title failed", e);
-      alert("Failed to save title");
+      pushNotification("Could not save report title", "Please try again.", "error");
     } finally {
       setIsSavingTitle(false);
     }
@@ -587,7 +590,7 @@ export const ReportDetail: React.FC = () => {
         items: [{ report_id: report0.id, pdf_base64: pdfDataUri }],
         filename: null,
       })) as string;
-      alert(`Exported ZIP:\n${zipPath}`);
+      pushNotification("Report export complete", zipPath, "success");
       return;
 
       // Legacy exporter code (kept for reference). Ensure we have a stable local `report` binding for type-checking.
@@ -844,7 +847,7 @@ export const ReportDetail: React.FC = () => {
       // Legacy single-PDF save path has been superseded by ZIP export above.
     } catch (err) {
       console.error("Export failed", err);
-      alert("Failed to export ZIP");
+      pushNotification("Report export failed", "Could not create the report ZIP.", "error");
     } finally {
       setIsExporting(false);
     }
@@ -857,23 +860,13 @@ export const ReportDetail: React.FC = () => {
       const result = await uploadReportDataset(report, {
         serverUrl,
       });
-      const state = result.duplicate ? "Already present on Server" : "Uploaded to Server";
-      alert(`✅ ${state}\nRun ID: ${result.run?.id || "unknown"}\n\nView at: ${serverUrl}`);
+      const state = result.duplicate ? "Report already on Server" : "Report uploaded";
+      pushNotification(state, `Run ID: ${result.run?.id || "unknown"} · ${serverUrl}`, "success");
     } catch (err: any) {
       console.error("Upload failed", err);
-      alert(`Failed to upload: ${err.message || err}`);
+      pushNotification("Report upload failed", err instanceof Error ? err.message : String(err), "error");
     } finally {
       setIsUploading(false);
-    }
-  };
-
-  const handleSaveServerUrl = async (url: string) => {
-    try {
-      const saved = await saveServerSyncConfig(url);
-      setServerUrl(saved.serverUrl);
-      setShowServerConfig(false);
-    } catch (error) {
-      alert(error instanceof Error ? error.message : "Could not save Server settings.");
     }
   };
 
@@ -881,6 +874,7 @@ export const ReportDetail: React.FC = () => {
     try {
       setIsDeleting(true);
       await invoke("delete_report", { id: report.id });
+      pushNotification("Report deleted", `Report #${report.id} was deleted.`, "success");
       navigate("/reports");
     } finally {
       setIsDeleting(false);
@@ -1003,54 +997,17 @@ export const ReportDetail: React.FC = () => {
               <Upload className="w-4 h-4" />{" "}
               {isUploading ? "Uploading…" : "Upload to Server"}
             </button>
-            <button
-              onClick={() => setShowServerConfig(true)}
-              className="absolute -right-2 -top-2 w-5 h-5 bg-slate-700 hover:bg-slate-600 text-white rounded-full text-xs flex items-center justify-center"
-              title="Configure server URL"
+            <Link
+              to="/settings"
+              aria-label="Server settings"
+              className="absolute -right-2 -top-2 flex h-6 w-6 items-center justify-center rounded-full bg-slate-700 text-white transition-colors hover:bg-slate-600"
+              title="Configure Server URL"
             >
-              ⚙
-            </button>
+              <Settings className="h-3.5 w-3.5" />
+            </Link>
           </div>
         </div>
       </div>
-
-      {/* Server URL Config Modal */}
-      {showServerConfig && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="bg-white dark:bg-slate-900 rounded-xl p-6 w-[400px] shadow-2xl">
-            <h3 className="text-lg font-semibold mb-4">PerfSight Server URL</h3>
-            <input
-              type="text"
-              defaultValue={serverUrl}
-              className="w-full px-3 py-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100"
-              placeholder="https://perfsight.example.com"
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  handleSaveServerUrl((e.target as HTMLInputElement).value);
-                }
-              }}
-              id="server-url-input"
-            />
-            <div className="flex justify-end gap-2 mt-4">
-              <button
-                onClick={() => setShowServerConfig(false)}
-                className="px-4 py-2 text-sm text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => {
-                  const input = document.getElementById("server-url-input") as HTMLInputElement;
-                  handleSaveServerUrl(input?.value || serverUrl);
-                }}
-                className="px-4 py-2 text-sm bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg"
-              >
-                Save
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       <div id="report-content" className="flex-1 overflow-y-auto p-4">
         {confirmDelete && (

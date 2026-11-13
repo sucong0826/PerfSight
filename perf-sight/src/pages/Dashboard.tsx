@@ -1,12 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { Activity, ChevronDown, Folder, Plus, ExternalLink, Settings } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { ChevronDown, Folder, Plus, ExternalLink, Settings as SettingsIcon, Square } from 'lucide-react';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { PerformanceCharts, ProcessInfo } from '../components/Charts';
 import { ProcessList } from '../components/ProcessList';
 import { LogMetricSettings, LogMetricConfig } from '../components/LogMetricSettings';
-import { getServerSyncConfig, saveServerSyncConfig, stopCollectionAndSyncReport, uploadLocalReport } from '../utils/serverSync';
+import { getServerSyncConfig, stopCollectionAndSyncReport, uploadLocalReport } from '../utils/serverSync';
+import { useNotifications } from '../components/Notifications';
 
 interface FolderInfo {
   path: string;
@@ -83,6 +85,7 @@ const genBuildId = () => {
 };
 
 export const Dashboard: React.FC = () => {
+  const { pushNotification } = useNotifications();
   // Default to Browser API (Chrome Task Manager metrics).
   const [mode, setMode] = useState<"system" | "browser">("browser");
   const [processes, setProcesses] = useState<ProcessInfo[]>([]);
@@ -114,8 +117,6 @@ export const Dashboard: React.FC = () => {
   const [serverConfig, setServerConfig] = useState(() => ({
     serverUrl: localStorage.getItem('perfsight_server_url') ?? "",
   }));
-  const [serverUrlDraft, setServerUrlDraft] = useState(serverConfig.serverUrl);
-  const [showServerConfig, setShowServerConfig] = useState(false);
   const [syncStatus, setSyncStatus] = useState<{
     state: "idle" | "uploading" | "success" | "error";
     message: string;
@@ -145,7 +146,6 @@ export const Dashboard: React.FC = () => {
       .then((config) => {
         if (!active) return;
         setServerConfig(config);
-        setServerUrlDraft(config.serverUrl);
       })
       .catch((error) => console.error("Could not load Server settings", error));
     return () => { active = false; };
@@ -238,10 +238,15 @@ export const Dashboard: React.FC = () => {
                   const stopResult = await stopCollectionAndSyncReport();
                   if (stopResult.uploaded && stopResult.reportId) {
                     setSyncStatus({ state: "success", message: `Uploaded report #${stopResult.reportId}`, reportId: stopResult.reportId });
+                    pushNotification("Report uploaded", `Report #${stopResult.reportId} was sent to the PerfSight Server.`, "success");
                   } else if (stopResult.uploadError && stopResult.reportId) {
                     setSyncStatus({ state: "error", message: stopResult.uploadError, reportId: stopResult.reportId });
+                    pushNotification("Report upload failed", stopResult.uploadError, "error", { label: "Retry upload", onClick: () => { void retryServerUpload(stopResult.reportId); } });
                   } else if (stopResult.uploadError) {
                     setSyncStatus({ state: "error", message: stopResult.uploadError });
+                    pushNotification("Report upload failed", stopResult.uploadError, "error");
+                  } else if (stopResult.saved && stopResult.reportId) {
+                    pushNotification("Report saved locally", serverConfig.serverUrl ? "Server upload did not start." : "Configure a Server URL in Settings to upload reports.", "info");
                   }
                   setIsCollecting(false);
                   setDurationHint(null);
@@ -401,6 +406,7 @@ export const Dashboard: React.FC = () => {
       setIsMocking(false);
       setIsCollecting(true);
       setChartData([]);
+      pushNotification("Collection started", `${pids.length} target ${pids.length === 1 ? "process" : "processes"} · ${mode === "system" ? "System Stats" : "Browser Stats"}.`, "success");
 
       // Schedule auto-stop (frontend-driven), survives route changes via backend rehydration fields.
       if (autoStopTimeoutRef.current) clearTimeout(autoStopTimeoutRef.current);
@@ -420,23 +426,11 @@ export const Dashboard: React.FC = () => {
       console.error(e);
       // Only use mock data when starting the real collector fails.
       startMockDataGeneration(Array.from(selectedPids));
+      pushNotification("Collector unavailable", "PerfSight is showing simulated metrics because the native collector could not start.", "error");
     }
   };
 
-  const handleSaveServerConfig = async () => {
-    try {
-      const saved = await saveServerSyncConfig(serverUrlDraft);
-      setServerConfig(saved);
-      setServerUrlDraft(saved.serverUrl);
-      setShowServerConfig(false);
-      setSyncStatus({ state: "idle", message: "" });
-    } catch (error) {
-      alert(error instanceof Error ? error.message : "Could not save Server settings.");
-    }
-  };
-
-  const retryServerUpload = async () => {
-    const reportId = syncStatus.reportId;
+  const retryServerUpload = async (reportId = syncStatus.reportId) => {
     if (!reportId) return;
     setSyncStatus({ state: "uploading", message: "Retrying Server upload…", reportId });
     try {
@@ -446,12 +440,15 @@ export const Dashboard: React.FC = () => {
         message: `Uploaded report #${reportId}${response.run?.id ? ` · Server ${response.run.id}` : ""}`,
         reportId,
       });
+      pushNotification("Report uploaded", `Report #${reportId} was sent to the PerfSight Server.`, "success");
     } catch (error) {
+      const message = error instanceof Error ? error.message : "Server upload failed.";
       setSyncStatus({
         state: "error",
-        message: error instanceof Error ? error.message : "Server upload failed.",
+        message,
         reportId,
       });
+      pushNotification("Report upload failed", message, "error", { label: "Retry upload", onClick: () => { void retryServerUpload(reportId); } });
     }
   };
 
@@ -466,16 +463,20 @@ export const Dashboard: React.FC = () => {
             message: `Uploaded report #${result.reportId}${result.serverRunId ? ` · Server ${result.serverRunId}` : ""}`,
             reportId: result.reportId,
           });
+          pushNotification("Report uploaded", `Report #${result.reportId} was sent to the PerfSight Server.`, "success");
         } else if (result.uploadError && result.reportId) {
           setSyncStatus({ state: "error", message: result.uploadError, reportId: result.reportId });
+          pushNotification("Report upload failed", result.uploadError, "error", { label: "Retry upload", onClick: () => { void retryServerUpload(result.reportId); } });
         } else if (result.uploadError) {
           setSyncStatus({ state: "error", message: result.uploadError });
+          pushNotification("Report upload failed", result.uploadError, "error");
         } else if (result.saved && result.reportId) {
           setSyncStatus({
             state: "idle",
             message: serverConfig.serverUrl ? "Report saved locally · Server upload did not start" : "Report saved locally · Configure Server to upload",
             reportId: result.reportId,
           });
+          pushNotification("Report saved locally", serverConfig.serverUrl ? "Server upload did not start." : "Configure a Server URL in Settings to upload reports.", "info");
         } else {
           setSyncStatus({ state: "idle", message: "" });
         }
@@ -487,8 +488,10 @@ export const Dashboard: React.FC = () => {
       autoStopTimeoutRef.current = null;
       autoStopDeadlineMsRef.current = null;
       setDurationHint(null);
+      if (isMocking) pushNotification("Preview collection stopped", "The simulated metrics session has ended.", "info");
     } catch (e) {
       console.error(e);
+      pushNotification("Could not stop collection", e instanceof Error ? e.message : "Please try again.", "error");
     }
   };
 
@@ -564,12 +567,10 @@ export const Dashboard: React.FC = () => {
 
   return (
     <div className="flex flex-col h-full bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-200">
-      <header className="flex items-center justify-between px-6 py-4 bg-white border-b border-slate-200 dark:bg-slate-900 dark:border-slate-800 shrink-0">
-        <div className="flex items-center gap-3">
-          <Activity className="w-6 h-6 text-indigo-600 dark:text-indigo-500" />
-          <h1 className="text-xl font-bold">PerfSight</h1>
-          <div className="h-6 w-px bg-slate-200 dark:bg-slate-700 mx-2"></div>
+      <header className="grid grid-cols-[1fr_auto_1fr] items-center gap-3 px-6 py-3 bg-white border-b border-slate-200 dark:bg-slate-900 dark:border-slate-800 shrink-0">
+        <div className="justify-self-start" aria-hidden="true" />
 
+        <div className="justify-self-center">
           <div className="flex bg-slate-100 p-1 rounded-lg border border-slate-200 dark:bg-slate-800 dark:border-slate-700">
             <button
               onClick={() => !isCollecting && setMode("system")}
@@ -580,7 +581,7 @@ export const Dashboard: React.FC = () => {
                   : "text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200"
               } ${isCollecting ? "opacity-50 cursor-not-allowed" : ""}`}
             >
-              System API
+              System Stats
             </button>
             <button
               onClick={() => !isCollecting && setMode("browser")}
@@ -591,67 +592,37 @@ export const Dashboard: React.FC = () => {
                   : "text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200"
               } ${isCollecting ? "opacity-50 cursor-not-allowed" : ""}`}
             >
-              Browser API
+              Browser Stats
             </button>
           </div>
-          {mode === "browser" && (
-            <div className="ml-3 text-xs text-slate-500">
-              Using{" "}
-              <span className="text-slate-700 dark:text-slate-300">
-                Chrome Task Manager
-              </span>{" "}
-              metrics (auto-fallback to OS when unavailable).
-            </div>
-          )}
         </div>
-        <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={() => {
-              setServerUrlDraft(serverConfig.serverUrl);
-              setShowServerConfig(true);
-            }}
-            className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-slate-200 text-sm text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
-            title={serverConfig.serverUrl || "Configure central PerfSight Server"}
+        <div className="flex items-center justify-self-end gap-3">
+          <Link
+            to="/settings"
+            aria-label="Settings"
+            title="Settings"
+            className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800"
           >
-            <Settings className="w-4 h-4" />
-            Server
-          </button>
-          {syncStatus.message && (
-            <div
-              className={`max-w-64 truncate text-xs ${
-                syncStatus.state === "error" ? "text-rose-600 dark:text-rose-400" :
-                syncStatus.state === "success" ? "text-emerald-600 dark:text-emerald-400" :
-                "text-slate-500"
-              }`}
-              title={syncStatus.message}
-            >
-              {syncStatus.state === "uploading" ? "Uploading… " : ""}{syncStatus.message}
-            </div>
-          )}
-          {syncStatus.state === "error" && syncStatus.reportId && (
-            <button
-              type="button"
-              onClick={() => void retryServerUpload()}
-              className="text-xs text-indigo-600 hover:text-indigo-500 dark:text-indigo-400"
-            >
-              Retry
-            </button>
-          )}
-          <div
-            className={`px-3 py-1 rounded-full text-sm font-medium ${
-              isCollecting
-                ? "bg-emerald-500/10 text-emerald-400"
-                : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400"
+            <SettingsIcon className="h-4 w-4" />
+          </Link>
+          <span
+            aria-label={syncStatus.state === "uploading" ? "Saving and uploading report" : syncStatus.state === "error" ? "Report upload failed" : isCollecting ? "Collecting" : "Idle"}
+            title={syncStatus.state === "uploading" ? "Saving and uploading report" : syncStatus.state === "error" ? "Report upload failed" : isCollecting ? "Collecting" : "Idle"}
+            className={`h-2.5 w-2.5 rounded-full ring-4 ${
+              syncStatus.state === "uploading"
+                ? "animate-pulse bg-amber-500 ring-amber-500/10"
+                : syncStatus.state === "error"
+                  ? "bg-rose-500 ring-rose-500/10"
+                  : isCollecting
+                    ? "animate-pulse bg-emerald-500 ring-emerald-500/10"
+                    : "bg-slate-300 ring-slate-300/15 dark:bg-slate-600 dark:ring-slate-600/20"
             }`}
-          >
-            {isCollecting ? "Collecting" : "Idle"}
-          </div>
+          />
         </div>
       </header>
 
       <main className="flex-1 overflow-auto p-6 gap-6 grid grid-cols-1 lg:grid-cols-4 min-h-0">
-        <div className="lg:col-span-1 h-full overflow-hidden">
+        {!isCollecting && <div className="lg:col-span-1 h-full overflow-hidden">
           <ProcessList
             processes={processes}
             selectedPids={selectedPids}
@@ -694,8 +665,36 @@ export const Dashboard: React.FC = () => {
             onStart={handleStart}
             onStop={handleStop}
           />
-        </div>
-        <div className="lg:col-span-3 h-full overflow-y-auto">
+        </div>}
+        <div className={`${isCollecting ? "lg:col-span-4" : "lg:col-span-3"} h-full overflow-y-auto`}>
+          {isCollecting && (
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 dark:border-emerald-900/70 dark:bg-emerald-950/30">
+              <div className="flex min-w-0 flex-wrap items-center gap-2.5">
+                <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-emerald-500" />
+                <span className="text-sm font-semibold text-emerald-800 dark:text-emerald-300">Collecting</span>
+                <span className="text-xs text-slate-500 dark:text-slate-400">{mode === "system" ? "System Stats" : "Browser Stats"}</span>
+                <span className="h-3.5 w-px bg-emerald-200 dark:bg-emerald-900" />
+                <span className="text-xs text-slate-600 dark:text-slate-300">
+                  {selectedProcessList.length} {selectedProcessList.length === 1 ? "process" : "processes"}
+                </span>
+                <div className="flex min-w-0 flex-wrap gap-1.5">
+                  {selectedProcessList.slice(0, 3).map((process) => {
+                    const name = processAliases[process.pid]?.trim() || process.title || process.name;
+                    return <span key={process.pid} title={name} className="max-w-40 truncate rounded-md bg-white/80 px-2 py-0.5 text-[11px] text-slate-600 dark:bg-slate-900/70 dark:text-slate-300">{name}</span>;
+                  })}
+                  {selectedProcessList.length > 3 && <span className="px-1 py-0.5 text-[11px] text-slate-500">+{selectedProcessList.length - 3} more</span>}
+                </div>
+                {durationHint && <span className="text-[11px] text-slate-500 dark:text-slate-400">{durationHint}</span>}
+              </div>
+              <button
+                type="button"
+                onClick={() => void handleStop()}
+                className="inline-flex shrink-0 items-center gap-2 rounded-lg bg-rose-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-rose-500"
+              >
+                <Square className="h-3.5 w-3.5" /> Stop
+              </button>
+            </div>
+          )}
           <div className="mb-4 bg-white border border-slate-200 rounded-xl p-4 dark:bg-slate-900 dark:border-slate-800">
             <div className="text-sm text-slate-500 uppercase font-bold mb-3">
               Test Context (saved into report metadata)
@@ -979,43 +978,6 @@ export const Dashboard: React.FC = () => {
         </div>
       </main>
 
-      {showServerConfig && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl dark:bg-slate-900">
-            <h2 className="text-lg font-semibold">Central PerfSight Server</h2>
-            <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-              Reports upload automatically after a test is stopped. Use an HTTPS URL for remote servers.
-            </p>
-            <label className="mt-5 block text-sm font-medium">
-              Server URL
-              <input
-                type="url"
-                value={serverUrlDraft}
-                onChange={(event) => setServerUrlDraft(event.target.value)}
-                placeholder="https://perfsight.example.com"
-                className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-950"
-                autoComplete="url"
-              />
-            </label>
-            <div className="mt-6 flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setShowServerConfig(false)}
-                className="rounded-lg px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handleSaveServerConfig}
-                className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500"
-              >
-                Save Server URL
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };

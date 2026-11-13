@@ -25,27 +25,17 @@ const SERVER_URL_KEY = "perfsight_server_url";
 const CLIENT_ID_KEY = "perfsight_client_id";
 const CLIENT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-interface NativeServerSyncConfig {
-  server_url: string;
-}
-
 export async function getServerSyncConfig(): Promise<ServerSyncConfig> {
   // Remove credentials written by older client versions now that this Server is open-access.
   localStorage.removeItem("perfsight_api_token");
-  const nativeConfig = await invoke<NativeServerSyncConfig>("get_server_sync_config");
-  return {
-    serverUrl: nativeConfig.server_url || localStorage.getItem(SERVER_URL_KEY) || "",
-  };
+  return { serverUrl: localStorage.getItem(SERVER_URL_KEY) || "" };
 }
 
 export async function saveServerSyncConfig(serverUrl: string): Promise<ServerSyncConfig> {
   const normalizedUrl = normalizeServerUrl(serverUrl);
-  const saved = await invoke<NativeServerSyncConfig>("set_server_sync_config", {
-    serverUrl: normalizedUrl,
-  });
-  localStorage.setItem(SERVER_URL_KEY, saved.server_url);
+  localStorage.setItem(SERVER_URL_KEY, normalizedUrl);
   localStorage.removeItem("perfsight_api_token");
-  return { serverUrl: saved.server_url };
+  return { serverUrl: normalizedUrl };
 }
 
 export function normalizeServerUrl(rawUrl: string): string {

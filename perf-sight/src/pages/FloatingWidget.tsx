@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWindow, Window } from "@tauri-apps/api/window";
 import { Square, Maximize2, GripHorizontal, X } from "lucide-react";
 import { stopCollectionAndSyncReport } from "../utils/serverSync";
 
@@ -103,11 +103,27 @@ export const FloatingWidget: React.FC = () => {
   const handleStop = async () => {
     try {
       const result = await stopCollectionAndSyncReport();
-      if (result.uploadError) {
-        alert(`Report saved locally, but Server upload failed: ${result.uploadError}`);
-      }
-      const mainWindow = await import("@tauri-apps/api/window").then(m => m.Window.getByLabel("main"));
+      const mainWindow = await Window.getByLabel("main");
       if (mainWindow) {
+        if (result.uploaded && result.reportId) {
+          await mainWindow.emit("perfsight-notification", {
+            title: "Report uploaded",
+            message: `Report #${result.reportId} was sent to the PerfSight Server.`,
+            kind: "success",
+          });
+        } else if (result.uploadError) {
+          await mainWindow.emit("perfsight-notification", {
+            title: "Report upload failed",
+            message: result.uploadError,
+            kind: "error",
+          });
+        } else if (result.saved && result.reportId) {
+          await mainWindow.emit("perfsight-notification", {
+            title: "Report saved locally",
+            message: "The report was saved on this computer.",
+            kind: "info",
+          });
+        }
         await mainWindow.show();
         await mainWindow.setFocus();
       }
@@ -120,7 +136,7 @@ export const FloatingWidget: React.FC = () => {
 
   const handleExpand = async () => {
     try {
-      const mainWindow = await import("@tauri-apps/api/window").then(m => m.Window.getByLabel("main"));
+      const mainWindow = await Window.getByLabel("main");
       if (mainWindow) {
         await mainWindow.show();
         await mainWindow.setFocus();

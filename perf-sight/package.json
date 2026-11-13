@@ -4,8 +4,8 @@
   "version": "0.1.8",
   "type": "module",
   "scripts": {
-    "sidecar:ensure": "python src-tauri/python/build_sidecar.py",
-    "dev:tauri": "node scripts/kill_ports.mjs 1420 && node scripts/kill_process.mjs perf-sight.exe && npm run sidecar:ensure && vite",
+    "sidecar:ensure": "node scripts/ensure_sidecar.mjs",
+    "dev:tauri": "npm run sidecar:ensure && vite --strictPort",
     "build:tauri": "npm run sidecar:ensure && tsc && vite build",
     "dev": "vite",
     "build": "tsc && vite build",

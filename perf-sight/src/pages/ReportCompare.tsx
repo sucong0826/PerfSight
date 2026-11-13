@@ -6,6 +6,7 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, Brush 
 } from 'recharts';
 import { useTheme } from "../theme";
+import { useNotifications } from "../components/Notifications";
 import jsPDF from "jspdf";
 import html2canvas from "html2canvas";
 
@@ -86,6 +87,7 @@ const extractProcItems = (r: ReportDetailData | undefined | null): ProcItem[] =>
 };
 
 export const ReportCompare: React.FC = () => {
+  const { pushNotification } = useNotifications();
   const [searchParams] = useSearchParams();
   const { theme } = useTheme();
   const isDark = theme === "dark";
@@ -915,14 +917,15 @@ export const ReportCompare: React.FC = () => {
                     filename,
                     pdfBase64: dataUri,
                   })) as string;
-                  alert(`PDF saved:\n${saved}`);
+                  pushNotification("Comparison PDF saved", saved, "success");
                 } catch (e) {
                   console.error("export_report_pdf failed", e);
                   pdf.save(filename);
+                  pushNotification("Comparison PDF downloaded", filename, "success");
                 }
               } catch (e) {
                 console.error("Compare export failed", e);
-                alert("Failed to export compare PDF");
+                pushNotification("Comparison PDF export failed", e instanceof Error ? e.message : "Please try again.", "error");
               } finally {
                 setIsExporting(false);
               }
@@ -969,9 +972,10 @@ export const ReportCompare: React.FC = () => {
                 a.click();
                 document.body.removeChild(a);
                 URL.revokeObjectURL(url);
+                pushNotification("Comparison bundle exported", a.download, "success");
               } catch (e) {
                 console.error("Bundle export failed", e);
-                alert("Failed to export comparison bundle");
+                pushNotification("Comparison bundle export failed", e instanceof Error ? e.message : "Please try again.", "error");
               } finally {
                 setIsExportingBundle(false);
               }
