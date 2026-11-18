@@ -68,7 +68,7 @@ export const SettingsPage: React.FC = () => {
             <div className="min-w-0 flex-1">
               <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">Central PerfSight Server</h2>
               <p className="mt-1 text-sm leading-6 text-slate-500 dark:text-slate-400">
-                Completed reports are uploaded automatically when you stop a test. Use the HTTPS address of your Server.
+                Completed reports are uploaded when you stop a test. The approved internal HTTP connection sends data without encryption.
               </p>
 
               <label htmlFor="server-url" className="mt-6 block text-sm font-medium text-slate-700 dark:text-slate-300">Server URL</label>
@@ -81,7 +81,7 @@ export const SettingsPage: React.FC = () => {
                   setError("");
                 }}
                 disabled={loading || saving}
-                placeholder="https://perfsight.example.com"
+                placeholder="https://perfsight.example.com or http://10.100.53.70:8080"
                 autoComplete="url"
                 className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 disabled:opacity-60 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:focus:ring-indigo-950"
               />

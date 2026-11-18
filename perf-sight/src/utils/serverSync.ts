@@ -24,6 +24,7 @@ export interface StopAndSyncResult {
 const SERVER_URL_KEY = "perfsight_server_url";
 const CLIENT_ID_KEY = "perfsight_client_id";
 const CLIENT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const ALLOWED_HTTP_SERVER_ORIGIN = "http://10.100.53.70:8080";
 
 export async function getServerSyncConfig(): Promise<ServerSyncConfig> {
   // Remove credentials written by older client versions now that this Server is open-access.
@@ -49,8 +50,9 @@ export function normalizeServerUrl(rawUrl: string): string {
     throw new Error("Enter a valid PerfSight Server URL.");
   }
 
-  if (parsed.protocol !== "https:") {
-    throw new Error("Use an HTTPS URL for the PerfSight Server.");
+  const allowedHttpOrigin = parsed.protocol === "http:" && parsed.origin === ALLOWED_HTTP_SERVER_ORIGIN;
+  if (parsed.protocol !== "https:" && !allowedHttpOrigin) {
+    throw new Error(`Use HTTPS, or the approved internal HTTP URL: ${ALLOWED_HTTP_SERVER_ORIGIN}.`);
   }
   if (parsed.username || parsed.password || parsed.search || parsed.hash) {
     throw new Error("The Server URL must not contain credentials, query parameters, or a fragment.");

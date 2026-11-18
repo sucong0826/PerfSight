@@ -1,4 +1,5 @@
-name: Release
+name: Build and Release PerfSight
+
 on:
   push:
     tags:
@@ -6,108 +7,105 @@ on:
   workflow_dispatch:
 
 jobs:
-  release:
+  build-client:
     permissions:
-      contents: write
+      contents: read
     strategy:
       fail-fast: false
       matrix:
-        platform: [macos-latest, ubuntu-24.04, windows-latest]
-    runs-on: ${{ matrix.platform }}
+        include:
+          - runner: macos-latest
+            platform: macos-arm64
+          - runner: windows-latest
+            platform: windows-x64
+    runs-on: ${{ matrix.runner }}
 
     steps:
-      - name: Checkout repository
+      - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Install dependencies (Ubuntu only)
-        if: startsWith(matrix.platform, 'ubuntu')
-        run: |
-          sudo apt-get update
-          # Tauri v2 / wry on Linux uses WebKitGTK 4.1 (and JavaScriptCoreGTK 4.1).
-          sudo apt-get install -y \
-            libgtk-3-dev \
-            libwebkit2gtk-4.1-dev \
-            libjavascriptcoregtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            patchelf
-
-      - name: Install Node.js
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
+          cache-dependency-path: perf-sight/package-lock.json
 
-      - name: Install Rust
+      - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install Python and Build Sidecar
+      - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
-      
-      - name: Build Python Sidecar
+
+      - name: Build macOS client
+        if: matrix.platform == 'macos-arm64'
+        run: bash scripts/build-macos.sh
+
+      - name: Upload macOS client artifact
+        if: matrix.platform == 'macos-arm64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-macos-arm64
+          path: artifacts/PerfSight-macos-arm64.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Build Windows client
+        if: matrix.platform == 'windows-x64'
+        shell: pwsh
+        run: ./scripts/build-windows.ps1
+
+      - name: Package browser extension
+        if: matrix.platform == 'windows-x64'
+        shell: pwsh
+        run: Compress-Archive -Path perf-sight-extension -DestinationPath artifacts/perf-sight-extension.zip -Force
+
+      - name: Upload Windows client artifacts
+        if: matrix.platform == 'windows-x64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-windows-x64
+          path: |
+            artifacts/PerfSight-windows-x64.msi
+            artifacts/perf-sight-extension.zip
+          if-no-files-found: error
+          retention-days: 30
+
+  publish-github-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build-client
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: client-macos-arm64
+          path: release-assets
+
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: client-windows-x64
+          path: release-assets
+
+      - name: Create release checksums
         shell: bash
         run: |
-          pip install psutil pyinstaller
-          cd perf-sight/src-tauri/python
-          pyinstaller --onefile --name collector collector.py
-          
-          mkdir -p ../binaries
-          
-          # Determine target triple suffix
-          if [ "${{ matrix.platform }}" == "windows-latest" ]; then
-            SUFFIX="x86_64-pc-windows-msvc.exe"
-            SRC="dist/collector.exe"
-          elif [[ "${{ matrix.platform }}" == ubuntu-* ]]; then
-            SUFFIX="x86_64-unknown-linux-gnu"
-            SRC="dist/collector"
-          else
-            # macOS
-            ARCH=$(uname -m)
-            if [ "$ARCH" == "arm64" ]; then
-              SUFFIX="aarch64-apple-darwin"
-            else
-              SUFFIX="x86_64-apple-darwin"
-            fi
-            SRC="dist/collector"
-          fi
-          
-          echo "Moving sidecar to ../binaries/collector-$SUFFIX"
-          mv $SRC ../binaries/collector-$SUFFIX
+          cd release-assets
+          sha256sum PerfSight-macos-arm64.zip PerfSight-windows-x64.msi perf-sight-extension.zip > SHA256SUMS
 
-      - name: Install frontend dependencies
-        run: cd perf-sight && npm install
-
-      - name: Build the app
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          projectPath: ./perf-sight
-          # Omit release parameters to prevent tauri-action from managing the release
-          # tagName: ${{ github.ref_name }}
-          # releaseName: 'PerfSight ${{ github.ref_name }}'
-          # releaseBody: 'See the assets to download this version and install.'
-          # releaseDraft: true
-          # prerelease: false
-
-      - name: Zip Chrome Extension (Windows)
-        if: matrix.platform == 'windows-latest'
-        run: Compress-Archive -Path perf-sight-extension -DestinationPath perf-sight-extension.zip
-
-      - name: Upload Artifacts to Release
+      - name: Create draft GitHub release
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
         with:
-           # Upload Extension (only exists on Windows runner) AND App Bundles
-           # Globs that don't match are ignored
-           files: |
-             perf-sight-extension.zip
-             perf-sight/src-tauri/target/release/bundle/nsis/*.exe
-             perf-sight/src-tauri/target/release/bundle/msi/*.msi
-             perf-sight/src-tauri/target/release/bundle/dmg/*.dmg
-             perf-sight/src-tauri/target/release/bundle/deb/*.deb
-             perf-sight/src-tauri/target/release/bundle/appimage/*.AppImage
-           draft: true
-           token: ${{ secrets.GITHUB_TOKEN }}
-
+          draft: true
+          generate_release_notes: true
+          files: |
+            release-assets/PerfSight-macos-arm64.zip
+            release-assets/PerfSight-windows-x64.msi
+            release-assets/perf-sight-extension.zip
+            release-assets/SHA256SUMS

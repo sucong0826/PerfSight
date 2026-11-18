@@ -24,12 +24,28 @@ Server will be available at:
 - **Web UI**: http://localhost:3001
 - **API**: http://localhost:3001/api/v1
 
-The Server binds to all interfaces so desktop clients on the LAN can reach it. Desktop clients require an HTTPS URL, so terminate TLS at a reverse proxy for shared deployments. The Server has no login or API token: anyone who can reach it can view, upload, import, or delete reports. Keep it on a trusted private network or restrict access at the network layer.
+The Server binds to all interfaces so desktop clients on the LAN can reach it. Desktop clients accept HTTPS, or the approved internal HTTP endpoint `http://10.100.53.70:8080`. HTTP is unencrypted and should only be used on a trusted, restricted test network. The Server has no login or API token: anyone who can reach it can view, upload, import, or delete reports. Restrict access at the network layer.
+
+### Internal-only HTTP through Caddy
+
+When port 80 is occupied, Caddy can expose the Server as plain HTTP on a separate port while keeping the Node service bound to loopback:
+
+```caddyfile
+{
+    auto_https disable_redirects
+}
+
+http://10.100.53.70:8080 {
+    reverse_proxy 127.0.0.1:3001
+}
+```
+
+Allow TCP 8080 only from the approved test computers in UFW, then configure each desktop client with `http://10.100.53.70:8080`. Do not expose this listener to untrusted networks.
 
 ## Connect PerfSight Desktop clients
 
-1. Start the Server and make its HTTPS URL reachable from each test computer.
-2. In PerfSight Dashboard on each test computer, open **Server** and enter the HTTPS URL.
+1. Start the Server and make its HTTPS or approved internal HTTP URL reachable from each test computer.
+2. In PerfSight Dashboard on each test computer, open **Server** and enter that URL.
 3. Add the same `campaign:<id>` tag to every machine in a coordinated test batch.
 4. Start and stop each test. PerfSight saves the report locally and uploads it automatically after a successful stop.
 5. Open the Server site directly. Filter by device name or campaign ID, then open or compare reports.
@@ -38,7 +54,7 @@ Each desktop installation sends a stable client ID. Repeated uploads of the same
 
 Uploads retain process names and aliases for analysis but remove process window titles and URLs, which may contain user content.
 
-The current transport uploads completed report datasets over HTTPS. Live streaming ingest from multiple desktops is a later phase; the extension WebSocket currently terminates on the local desktop app.
+The current transport uploads completed report datasets over HTTP or HTTPS, depending on the configured Server URL. Live streaming ingest from multiple desktops is a later phase; the extension WebSocket currently terminates on the local desktop app.
 
 ## API Reference
 

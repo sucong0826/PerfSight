@@ -12,3 +12,8 @@ build/
 .idea/
 *.log
 src-tauri/gen/
+artifacts/
+perf-sight/src-tauri/python/.venv/
+perf-sight/src-tauri/python/dist/
+perf-sight/src-tauri/python/build/
+perf-sight/src-tauri/binaries/collector-*
