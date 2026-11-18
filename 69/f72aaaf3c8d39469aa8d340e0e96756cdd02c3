@@ -1,0 +1,57 @@
+.gitignore
+  s_f7324e840bd8e9::t_416a5acfffe31a 15-19
+scripts/push-to-both.sh
+  s_f7324e840bd8e9::t_27af79535a3be8 1-22,24-56,63-76,78-97,111,118,122-125,127,129
+  s_f7324e840bd8e9::t_4ea38b7892d0a8 23
+  s_f7324e840bd8e9::t_8fb35ce9f86b61 77
+  s_f7324e840bd8e9::t_7ff54f1f8c6167 98-110,112-117,119-121,126,130
+  s_f7324e840bd8e9::t_1fdae73858a37f 59-62,128
+  s_f7324e840bd8e9::t_9eeec3e8ca05dd 57-58
+perf-sight/src/utils/serverSync.ts
+  s_f7324e840bd8e9::t_d9654cb7ce21a6 27,53-55
+perf-sight/src-tauri/tauri.conf.json
+  s_f7324e840bd8e9::t_d9654cb7ce21a6 18-19
+perfsight-server/README.md
+  s_f7324e840bd8e9::t_d9654cb7ce21a6 27,47
+  s_f7324e840bd8e9::t_871f604b4cd81a 29-43,48,57
+  s_f7324e840bd8e9::t_97747951cab2ba 28
+docs/build.md
+  s_f7324e840bd8e9::t_9ae74a04138f9c 13
+  s_f7324e840bd8e9::t_416a5acfffe31a 82,84-85,92,108,128,165-167
+  s_f7324e840bd8e9::t_971b8d3ef4361b 133,137
+  s_f7324e840bd8e9::t_1fdae73858a37f 86-91,101-107
+  s_f7324e840bd8e9::t_83ef37d0ae67e0 145-147,150-151
+  s_f7324e840bd8e9::t_4ea38b7892d0a8 124-127
+  s_f7324e840bd8e9::t_64a4b947a8ddfa 78-80,93-95,98,100,109-112,116-118
+  s_f7324e840bd8e9::t_d89ff7abaa1a90 76,83,97,113-115,119-123,131,134-136,138-140,142,144,152-158,161-163
+  s_f7324e840bd8e9::t_0875e716bbd7fe 96,99,129-130,132
+.github/workflows/release.yml
+  s_f7324e840bd8e9::t_4ea38b7892d0a8 96,99-101,111
+  s_f7324e840bd8e9::t_716c9a05443e18 1-2,10,16-21,24,27,31-32,34,37,41-95,102,105-110
+  s_f7324e840bd8e9::t_64a4b947a8ddfa 12
+perf-sight/src/pages/Settings.tsx
+  s_f7324e840bd8e9::t_d9654cb7ce21a6 71
+  s_f7324e840bd8e9::t_871f604b4cd81a 84
+scripts/build-windows.ps1
+  s_f7324e840bd8e9::t_416a5acfffe31a 1-68
+scripts/sync-client-artifacts.sh
+  s_f7324e840bd8e9::t_5317bdc5d08626 1-67
+scripts/build-macos.sh
+  s_f7324e840bd8e9::t_416a5acfffe31a 1-54
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "69f72aaaf3c8d39469aa8d340e0e96756cdd02c3",
+  "prompts": {},
+  "sessions": {
+    "s_f7324e840bd8e9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1ce55-711b-77f2-b0c3-01c33cc25509",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "Clever Su <clever.su@zoom.us>"
+    }
+  }
+}
