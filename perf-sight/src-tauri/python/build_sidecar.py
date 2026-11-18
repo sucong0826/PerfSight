@@ -47,15 +47,33 @@ def _default_target_triple() -> str:
     if sysname == "Linux":
         return "x86_64-unknown-linux-gnu"
     if sysname == "Windows":
-        # GitHub Actions uses this naming convention in our workflow.
-        return "x86_64-pc-windows-msvc.exe"
+        return "x86_64-pc-windows-msvc"
 
     raise RuntimeError(f"Unsupported platform for sidecar build: {sysname} / {machine}")
 
 
+def _sidecar_target_name() -> str:
+    raw_target = os.environ.get("TAURI_ENV_TARGET_TRIPLE") or _default_target_triple()
+    target = raw_target.strip()
+    if target.endswith(".exe"):
+        target = target[:-4]
+
+    suffixes = {
+        "aarch64-apple-darwin": "",
+        "x86_64-apple-darwin": "",
+        "x86_64-unknown-linux-gnu": "",
+        "x86_64-pc-windows-msvc": ".exe",
+    }
+    suffix = suffixes.get(target)
+    if suffix is None:
+        raise RuntimeError("Unsupported Tauri target triple for collector sidecar.")
+    return f"{target}{suffix}"
+
+
 def main():
-    # Allow passing TAURI_ENV_TARGET_TRIPLE explicitly (tauri-build sets this).
-    target = os.environ.get("TAURI_ENV_TARGET_TRIPLE") or _default_target_triple()
+    # Tauri supplies a bare Rust target triple to beforeBuildCommand. Add the
+    # platform-specific executable suffix expected by bundle.externalBin.
+    target = _sidecar_target_name()
 
     here = Path(__file__).resolve().parent  # src-tauri/python
     src_tauri_dir = here.parent

@@ -47,6 +47,14 @@ try {
   npm ci
   if ($LASTEXITCODE -ne 0) { Stop-Build 'npm ci failed.' }
 
+  npm run sidecar:ensure
+  if ($LASTEXITCODE -ne 0) { Stop-Build 'Windows collector sidecar build failed.' }
+
+  $collectorPath = Join-Path $appDir 'src-tauri/binaries/collector-x86_64-pc-windows-msvc.exe'
+  if (-not (Test-Path -LiteralPath $collectorPath -PathType Leaf)) {
+    Stop-Build "Windows collector sidecar was not created at '$collectorPath'."
+  }
+
   npm run tauri -- build --bundles msi
   if ($LASTEXITCODE -ne 0) { Stop-Build 'Tauri MSI build failed.' }
 }
