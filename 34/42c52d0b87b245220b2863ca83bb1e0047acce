@@ -1,0 +1,24 @@
+scripts/sync-client-artifacts.sh
+  s_f7324e840bd8e9::t_2319de8dfee99e 15-75,79-80,84-85,90,113,124
+scripts/deploy-server.sh
+  s_f7324e840bd8e9::t_af0e93a75177c5 1-56
+docs/build.md
+  s_f7324e840bd8e9::t_2319de8dfee99e 123-130
+  s_f7324e840bd8e9::t_af0e93a75177c5 147-152,157-166
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "3442c52d0b87b245220b2863ca83bb1e0047acce",
+  "prompts": {},
+  "sessions": {
+    "s_f7324e840bd8e9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1ce55-711b-77f2-b0c3-01c33cc25509",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "Clever Su <clever.su@zoom.us>"
+    }
+  }
+}
