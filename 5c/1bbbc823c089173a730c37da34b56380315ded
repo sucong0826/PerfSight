@@ -1,0 +1,23 @@
+perfsight-server/public/index.html
+  s_f7324e840bd8e9::t_e75fc476f5d4e4 1339-1345,1347-1357,1360,1363-1369,1372-1375,1423-1442
+  s_f7324e840bd8e9::t_2dbbfaf0b5d46d 828-829,834,845-848,851-852,1313-1314
+  s_f7324e840bd8e9::t_ae51c22503bc07 832-833,835-837,850,858,924-931,1315-1318
+perf-sight/src/pages/Reports.tsx
+  s_f7324e840bd8e9::t_e75fc476f5d4e4 301-317,323
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "5c1bbbc823c089173a730c37da34b56380315ded",
+  "prompts": {},
+  "sessions": {
+    "s_f7324e840bd8e9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1ce55-711b-77f2-b0c3-01c33cc25509",
+        "model": "gpt-6-luna"
+      },
+      "human_author": "Clever Su <clever.su@zoom.us>"
+    }
+  }
+}
