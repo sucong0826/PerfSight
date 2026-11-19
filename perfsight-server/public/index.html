@@ -825,13 +825,16 @@
         const labels = {};
         const byPid = new Map();
         
-        const snapshot = run.report?.meta?.process_snapshot || [];
+        const snapshotValue = run.report?.meta?.process_snapshot;
+        const snapshot = Array.isArray(snapshotValue) ? snapshotValue : [];
         const snapByPid = new Map();
         for (const p of snapshot) {
-          if (p.pid) {
-            labels[p.pid] = p.alias || p.title || p.name || `PID ${p.pid}`;
-            snapByPid.set(p.pid, p);
-          }
+          const pid = Number(p?.pid);
+          if (!Number.isSafeInteger(pid) || pid < 0) continue;
+          const processName = [p?.alias, p?.title, p?.name]
+            .find(value => typeof value === 'string' && value.trim());
+          labels[pid] = processName ? processName.trim() : 'Process';
+          snapByPid.set(pid, p);
         }
         
         const data = metrics.map(batch => {
@@ -839,14 +842,20 @@
           const elapsed = (ts - startTime) / 1000;
           const row = { timestamp: batch.timestamp, elapsed };
           
-          for (const [pidStr, m] of Object.entries(batch.metrics || {})) {
+          const batchMetrics = batch.metrics && typeof batch.metrics === 'object' && !Array.isArray(batch.metrics)
+            ? batch.metrics
+            : {};
+          for (const [pidStr, rawMetric] of Object.entries(batchMetrics)) {
             const pid = Number(pidStr);
+            if (!Number.isSafeInteger(pid) || pid < 0) continue;
+            if (!rawMetric || typeof rawMetric !== 'object' || Array.isArray(rawMetric)) continue;
+            const m = rawMetric;
             pidSet.add(pid);
             const cpu = m.cpu_chrome_usage ?? m.cpu_os_usage ?? m.cpu_usage;
             const mem = m.memory_private ?? m.memory_footprint ?? m.memory_rss;
             if (typeof cpu === 'number') row[`cpu_${pid}`] = cpu;
             if (typeof mem === 'number') row[`mem_${pid}`] = mem / (1024 * 1024);
-            if (!labels[pid]) labels[pid] = `PID ${pid}`;
+            if (!labels[pid]) labels[pid] = 'Process';
             
             if (!byPid.has(pid)) byPid.set(pid, { cpu: [], memMb: [] });
             const s = byPid.get(pid);
@@ -912,8 +921,14 @@
       const insights = analysis.insights || [];
       const score = analysis.score;
 
-      const cpuKeys = pids.map(pid => ({ key: `cpu_${pid}`, label: processLabels[pid] || `PID ${pid}` }));
-      const memKeys = pids.map(pid => ({ key: `mem_${pid}`, label: processLabels[pid] || `PID ${pid}` }));
+      const cpuKeys = pids.map(pid => ({
+        key: `cpu_${pid}`,
+        label: `${processLabels[pid] || 'Process'} (PID ${pid})`,
+      }));
+      const memKeys = pids.map(pid => ({
+        key: `mem_${pid}`,
+        label: `${processLabels[pid] || 'Process'} (PID ${pid})`,
+      }));
       
       const getScoreColor = (s) => {
         if (s == null) return 'text-slate-500';
@@ -1295,9 +1310,12 @@
       };
 
       const getProcLabel = (run, pid) => {
-        const snap = run?.report?.meta?.process_snapshot || [];
-        const p = snap.find(s => s.pid === pid);
-        return p?.alias || p?.title || p?.name || `PID ${pid}`;
+        const snapshot = run?.report?.meta?.process_snapshot;
+        const snap = Array.isArray(snapshot) ? snapshot : [];
+        const p = snap.find(s => Number(s?.pid) === pid);
+        const processName = [p?.alias, p?.title, p?.name]
+          .find(value => typeof value === 'string' && value.trim());
+        return processName ? processName.trim() : 'Process';
       };
 
       const getColorForRun = (runId) => {
@@ -1318,30 +1336,43 @@
           const row = { time_s: (i * intervalMs) / 1000 };
           
           runs.forEach(r => {
-            if (!r?.report?.metrics?.[i]) return;
-            const batch = r.report.metrics[i];
-            const selectedPids = new Set(tab === 'cpu' ? (cpuSelById[r.id] || []) : (memSelById[r.id] || []));
-            
-            if (!selectedPids.size) {
-              row[`${tab}_${r.id}`] = null;
-              return;
-            }
-            
+            const rawSelectedPids = tab === 'cpu' ? cpuSelById[r.id] : memSelById[r.id];
+            const selectedPids = Array.from(new Set(
+              (Array.isArray(rawSelectedPids) ? rawSelectedPids : [])
+                .map(pid => Number(pid))
+                .filter(pid => Number.isFinite(pid))
+            ));
+            const batch = r?.report?.metrics?.[i];
             let total = 0;
-            Object.entries(batch.metrics || {}).forEach(([pidStr, m]) => {
-              const pid = Number(pidStr);
-              if (!selectedPids.has(pid)) return;
-              
+            let hasTotal = false;
+
+            selectedPids.forEach(pid => {
+              const seriesKey = `${tab}_${r.id}_${pid}`;
+              const m = batch?.metrics?.[String(pid)];
+              if (!m || typeof m !== 'object') {
+                row[seriesKey] = null;
+                return;
+              }
+
+              let value = null;
               if (tab === 'cpu') {
                 const cpu = m.cpu_chrome_usage ?? m.cpu_os_usage ?? m.cpu_usage;
-                if (typeof cpu === 'number' && Number.isFinite(cpu)) total += cpu;
+                if (typeof cpu === 'number' && Number.isFinite(cpu)) value = cpu;
               } else {
                 const mem = m.memory_private ?? m.memory_footprint ?? m.memory_rss;
-                if (typeof mem === 'number' && Number.isFinite(mem)) total += mem / (1024 * 1024);
+                if (typeof mem === 'number' && Number.isFinite(mem)) value = mem / (1024 * 1024);
+              }
+
+              row[seriesKey] = value;
+              if (value != null) {
+                total += value;
+                hasTotal = true;
               }
             });
-            
-            row[`${tab}_${r.id}`] = total;
+
+            // Keep report-level totals for the summary table while charting each
+            // process as its own series.
+            row[`${tab}_${r.id}`] = selectedPids.length && hasTotal ? total : null;
           });
           
           data.push(row);
@@ -1389,11 +1420,26 @@
         );
       }
 
-      const chartDataKeys = runs.map(r => ({
-        key: `${tab}_${r.id}`,
-        label: r.deviceName ? `${r.title} · ${r.deviceName}` : r.title,
-        color: getColorForRun(r.id),
-      }));
+      let chartSeriesIndex = 0;
+      const chartDataKeys = runs.flatMap(r => {
+        const rawSelectedPids = tab === 'cpu' ? cpuSelById[r.id] : memSelById[r.id];
+        const selectedPids = Array.from(new Set(
+          (Array.isArray(rawSelectedPids) ? rawSelectedPids : [])
+            .map(pid => Number(pid))
+            .filter(pid => Number.isFinite(pid))
+        ));
+        const reportLabel = r.deviceName ? `${r.title} · ${r.deviceName}` : r.title;
+
+        return selectedPids.map(pid => {
+          const series = {
+            key: `${tab}_${r.id}_${pid}`,
+            label: `${reportLabel} · ${getProcLabel(r, pid)} (PID ${pid})`,
+            color: COLORS.PALETTE[chartSeriesIndex % COLORS.PALETTE.length],
+          };
+          chartSeriesIndex += 1;
+          return series;
+        });
+      });
 
       // Delta badge helper
       const deltaBadge = (delta, isWorse) => {

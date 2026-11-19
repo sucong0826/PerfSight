@@ -298,12 +298,29 @@ export const Reports: React.FC = () => {
   const handleCreateComparison = async () => {
     if (selectedIds.size < 2) return;
     const ids = Array.from(selectedIds);
+    const selectedReports = reports.filter((report) => selectedIds.has(report.id));
+    if (selectedReports.length < 2) return;
+
+    // Keep the new comparison alongside the selected reports. If reports come
+    // from different subfolders, use their deepest common parent.
+    const folderParts = selectedReports.map((report) =>
+      normFolder(report.folder_path).split("/").filter(Boolean)
+    );
+    const commonFolderParts: string[] = [];
+    const maxCommonDepth = Math.min(...folderParts.map((parts) => parts.length));
+    for (let depth = 0; depth < maxCommonDepth; depth += 1) {
+      const part = folderParts[0][depth];
+      if (!folderParts.every((parts) => parts[depth] === part)) break;
+      commonFolderParts.push(part);
+    }
+    const comparisonFolderPath = commonFolderParts.join("/");
+
     const title = `Comparison (${ids.length})`;
     const comparisonId = (await invoke("create_comparison", {
       args: {
         title,
         reportIds: ids,
-        folderPath: "",
+        folderPath: comparisonFolderPath,
         baselineReportId: ids[0],
         cpuSelectionsById: null,
         memSelectionsById: null,
