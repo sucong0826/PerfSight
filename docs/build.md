@@ -120,11 +120,14 @@ builds Apple Silicon macOS and Windows x64 packages, stores job artifacts, and
 creates a draft GitHub Release with the installers. You can also run the
 workflow manually to build job artifacts without creating a release.
 
-The packages are `PerfSight-macos-arm64.zip` and
-`PerfSight-windows-x64.msi`. The GitHub Release also includes `SHA256SUMS`.
-Download the two installers manually and copy them to the PerfSight checkout on
-the server. After placing both files in its root `artifacts/` directory, sync
-them to device-management:
+The GitHub Release contains the installer files `PerfSight-macos-arm64.zip` and
+`PerfSight-windows-x64.msi`, plus `SHA256SUMS`. Downloading artifacts directly
+from a GitHub Actions run instead produces wrapper files named
+`client-macos-arm64.zip` and `client-windows-x64.zip`. Put either the two direct
+installer files or both wrapper ZIPs in the PerfSight checkout's `artifacts/`
+directory. The sync script unpacks the GitHub wrappers and uploads the
+installers under the stable filenames expected by the device-management
+download links, replacing the previous versions:
 
 ```bash
 DEVICE_MANAGEMENT_UPLOAD_DIR=/opt/device-management/server/uploads/perfsight \
@@ -141,21 +144,26 @@ existing `/api/uploads` route after the site frontend is deployed.
 
 ## Deploy the Server from GitLab
 
-On the internal server, update the PerfSight checkout from its GitLab remote,
-then rebuild and restart the service. Set `DEPLOY_REMOTE` to the remote name
-that points to GitLab (`origin` if the server clone came directly from GitLab,
-or `gitlab` if the clone has both remotes). Run this from the repository root:
+On the internal server, first pull the latest code into the directory used by
+the service. Set `DEPLOY_REMOTE` to the remote name that points to GitLab
+(`origin` if the server clone came directly from GitLab, or `gitlab` if the
+clone has both remotes). Then run the build and restart script. It verifies
+that the selected directory matches the systemd service's `ExecStart` before
+running migrations or rebuilding:
 
 ```bash
 DEPLOY_REMOTE=origin
 git pull --ff-only "$DEPLOY_REMOTE" main
-cd perfsight-server
-npm ci
-npx prisma generate
-npx prisma migrate deploy
-npm run build
-sudo systemctl restart perfsight-server
-sudo systemctl is-active perfsight-server
+bash scripts/deploy-server.sh
+```
+
+If the repository checkout is separate from the active service directory, run
+the script with `PERFSIGHT_SERVER_DIR` set to the service directory. Pull the
+latest code into that directory first:
+
+```bash
+PERFSIGHT_SERVER_DIR=/home/zoom/project/perf-sight-server \
+  bash scripts/deploy-server.sh
 ```
 
 Keep the server's `.env` on the server and out of Git. The Caddy HTTP listener
