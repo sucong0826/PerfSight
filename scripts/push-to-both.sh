@@ -101,7 +101,7 @@ git -C "$REPO_ROOT" fetch --no-tags gitlab "refs/heads/${branch}:${remote_ref}"
 source_tree="$(git -C "$REPO_ROOT" rev-parse "${local_ref}^{tree}")"
 source_commit="$(git -C "$REPO_ROOT" rev-parse "$local_ref")"
 while IFS= read -r -d '' path; do
-  lower_path="${path,,}"
+  lower_path="$(printf '%s' "$path" | tr '[:upper:]' '[:lower:]')"
   if [[ "$lower_path" =~ \.(ar|war|tar|gz|zip|exe|pkg|dmg|dll|app|bundle|dylib|framework|h5|pt|pth|bin|onnx|model|pkl|vct|mar|pte|pt2|ptl|safetensors|keras|pb|ckpt|tflite|tfrecords|npy|npz|gguf|ggml|ggmf|ggjt|nc|mleap|coreml|surml|llamafile|prompt|dlc|caffemodel|prototxt|a|o|so)$ ]]; then
     printf 'Push error: current source tree contains GitLab-prohibited file %q. GitHub is current; remove it from the branch tip before syncing.\n' \
       "$path" >&2
